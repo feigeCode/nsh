@@ -210,6 +210,19 @@
   token takes both appearances: one the file gives only in `light` (or `theme`) is that color in dark mode too, as
   in a theme file, so an override that differs in dark mode names it in `dark`. GPUI's `AppView::set_theme` /
   `set_theme_json` (below) give a whole theme instead, the default's where the file is silent.
+- **A host's panel windows** (`nsh_platform_macos::{Panel, PanelOptions, PanelLevel}`; `crates/nsh-platform-macos/src/panel.rs`):
+  a host that needs a second window of its own (a floating palette, a quick-look window) opens one with
+  `Panel::open(options, source)`, giving it an `AppSource` of its own (a Rust root, a bundle, a dev server): the panel
+  runs its own app and engine (`AppView`) beside the main window's. A panel has no title bar by default (`borderless`
+  gives it one), floats at a `PanelLevel` (`Normal`, `Floating` — above other apps' windows — or `AboveDock`), may be
+  transparent, move by its background, hide when the app is inactive and take the keyboard without activating the app
+  (`nonactivating`); `show` makes it the key window without activating the app, `hide` orders it out and gives the
+  focus back to the app that had it, `set_frame`, `set_level` and `set_title` change it while it is open, and
+  `close` (or dropping the `Panel`) closes the window and stops its app. Sizes are points, and `PanelOptions::size`'s
+  `None` opens it at 70% of the screen. `Panel::open` runs on the main thread, as `run_app` does: components run on
+  the engine thread, so a host opens its panels from its own main-thread code (`examples/panel/native/src/main.rs`
+  opens one before the main window). Windows and Linux have the same types, and `Panel::open` fails with
+  `PanelError::Unsupported` there until their backends open panels.
 - **The iOS SDK** (`crates/xtask/src/ios.rs`): per platform slice (device, simulator, Catalyst) a static
   `NativeShell.framework` whose binary is `nsh-platform-ios` with feature `embed` (built by `cargo rustc --crate-type
   staticlib`, so the hosts never build or export it) merged by `libtool` with the Swift module, compiled with library
