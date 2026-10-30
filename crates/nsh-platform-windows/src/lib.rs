@@ -18,8 +18,8 @@
 //!
 //! [`AppView`] is one surface as a window (top-level or a child of the
 //! embedding app's window); [`run_app`] opens one and runs the message
-//! loop. Panel windows ([`Panel`]) are not implemented yet: the types are
-//! there to compile an app's panel code. Off Windows this crate is empty.
+//! loop. A panel window ([`Panel`]) is another such view, a second window
+//! of the app on the same message loop. Off Windows this crate is empty.
 
 #![cfg(windows)]
 
