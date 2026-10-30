@@ -14,13 +14,11 @@
 //! main-thread code (as an app's runner does), not from a component's event
 //! handler.
 
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc};
 
 use nsh_core::desktop::WindowFrame;
 pub use nsh_core::desktop::{PanelError, PanelLevel, PanelOptions};
+use nsh_core::geometry::{Points, Size};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::{
     NSApplicationActivationOptions, NSBackingStoreType, NSColor, NSFloatingWindowLevel,
@@ -40,12 +38,17 @@ use crate::{App, AppOptions, AppSource, AppView};
 /// components run on the engine thread). The JS side's `Window.openPanel`
 /// needs a `DesktopCommand` and a hop back to the main thread, which is
 /// future work: a panel is opened from Rust only for now.
+///
+/// The `app`'s [`AppOptions`] are the app's own, not the window's: its
+/// `data_dir`, `limits` and `components` come from the host, as they do for
+/// the [main window](run_app)'s app, and every app keeps its data in
+/// `<data_dir>/<app id>` ([`AppOptions::data_dir`]), so apps of different
+/// ids stay apart.
 pub struct Panel {
     window: Retained<PanelWindow>,
     app: Rc<AppView>,
     /// The app in front before the panel showed, to give it the focus back.
     previous: RefCell<Option<Retained<NSRunningApplication>>>,
-    closed: Cell<bool>,
 }
 
 impl Panel {
@@ -54,16 +57,14 @@ impl Panel {
     ///
     /// # Errors
     ///
-    /// [`PanelError::Unsupported`] off the main thread, and
+    /// [`PanelError::WrongThread`] off the main thread, and
     /// [`PanelError::Invalid`] for a size that is not positive.
     pub fn open(
         options: PanelOptions,
         app: AppOptions,
         source: AppSource,
     ) -> Result<Self, PanelError> {
-        let mtm = MainThreadMarker::new().ok_or(PanelError::Unsupported(
-            "a panel window must be opened on the main thread",
-        ))?;
+        let mtm = MainThreadMarker::new().ok_or(PanelError::WrongThread)?;
         let (width, height) = panel_size(mtm, options.size)?;
         let mut style = if options.borderless {
             NSWindowStyleMask::Borderless
@@ -119,7 +120,6 @@ impl Panel {
             window,
             app: view,
             previous: RefCell::new(None),
-            closed: Cell::new(false),
         })
     }
 
@@ -132,8 +132,16 @@ impl Panel {
     }
 
     /// Hides the window, giving the focus back to the app that had it before
-    /// the panel showed (when this app still has it).
+    /// the panel showed (when it is still running).
     pub fn hide(&self) {
+        self.dismiss();
+    }
+
+    /// Takes the window off screen and gives the focus back to the app that
+    /// had it before the panel showed. `hide`, `close` and dropping the
+    /// panel all end here, so closing a nonactivating panel leaves the front
+    /// app where hiding it does.
+    fn dismiss(&self) {
         self.window.orderOut(None);
         if let Some(previous) = self.previous.borrow_mut().take() {
             // The app that had the focus before the panel showed takes it
@@ -164,10 +172,10 @@ impl Panel {
         self.window.setTitle(&NSString::from_str(title));
     }
 
-    /// Closes the window and stops its app.
+    /// Closes the window and stops its app, giving the focus back to the app
+    /// that had it before the panel showed (as [`hide`](Self::hide) does).
     pub fn close(self) {
-        self.closed.set(true);
-        self.window.orderOut(None);
+        self.dismiss();
         self.window.close();
         self.app.stop();
     }
@@ -175,18 +183,16 @@ impl Panel {
 
 impl Drop for Panel {
     fn drop(&mut self) {
-        if !self.closed.get() {
-            self.window.close();
-            self.app.stop();
-        }
+        self.dismiss();
+        self.app.stop();
     }
 }
 
 /// The panel's content size: 70% of the main screen when not given.
-fn panel_size(mtm: MainThreadMarker, size: Option<(i32, i32)>) -> Result<(f64, f64), PanelError> {
+fn panel_size(mtm: MainThreadMarker, size: Option<Size<Points>>) -> Result<(f64, f64), PanelError> {
     match size {
-        Some((width, height)) if width > 0 && height > 0 => {
-            Ok((f64::from(width), f64::from(height)))
+        Some(size) if size.width.0 > 0.0 && size.height.0 > 0.0 => {
+            Ok((f64::from(size.width.0), f64::from(size.height.0)))
         }
         Some(_) => Err(PanelError::Invalid("a panel's size must be positive")),
         None => {

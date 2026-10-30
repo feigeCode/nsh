@@ -8,7 +8,7 @@ use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
-    geometry::{Point, Points},
+    geometry::{Point, Points, Size},
     keymap::{self, Keystroke, Modifiers, When},
 };
 
@@ -182,9 +182,10 @@ pub enum PanelLevel {
 pub struct PanelOptions {
     /// The window's title.
     pub title: String,
-    /// The window's content size in points. `None` opens it at 70% of the
-    /// main screen's visible size, centered.
-    pub size: Option<(i32, i32)>,
+    /// The window's content size in points: a [`Size`] of [`Points`], as
+    /// the rest of the API sizes windows. `None` (the default) opens it at
+    /// 70% of the main screen's visible size, centered.
+    pub size: Option<Size<Points>>,
     /// How it floats ([`PanelLevel::Floating`] by default).
     pub level: PanelLevel,
     /// No title bar and no frame (the default): the app draws every part of
@@ -224,6 +225,9 @@ pub enum PanelError {
     Unsupported(&'static str),
     /// The options are not usable.
     Invalid(&'static str),
+    /// The caller is not on the thread the platform opens windows on (the
+    /// main thread, on the desktops that have panels).
+    WrongThread,
 }
 
 impl fmt::Display for PanelError {
@@ -233,6 +237,7 @@ impl fmt::Display for PanelError {
                 write!(f, "panel windows are not supported here: {message}")
             }
             Self::Invalid(message) => write!(f, "invalid panel options: {message}"),
+            Self::WrongThread => f.write_str("a panel window must be opened on the main thread"),
         }
     }
 }
@@ -893,6 +898,14 @@ mod tests {
         assert!(!options.hides_on_deactivate);
         assert!(!options.movable_by_background);
         assert!(!options.nonactivating);
+    }
+
+    #[test]
+    fn a_panel_reports_the_thread_it_needs() {
+        assert_eq!(
+            PanelError::WrongThread.to_string(),
+            "a panel window must be opened on the main thread"
+        );
     }
 
     #[test]
