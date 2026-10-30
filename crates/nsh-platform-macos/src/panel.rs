@@ -16,12 +16,11 @@
 
 use std::{
     cell::{Cell, RefCell},
-    error::Error,
-    fmt,
     rc::Rc,
 };
 
 use nsh_core::desktop::WindowFrame;
+pub use nsh_core::desktop::{PanelError, PanelLevel, PanelOptions};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
 use objc2_app_kit::{
     NSApplicationActivationOptions, NSBackingStoreType, NSColor, NSFloatingWindowLevel,
@@ -33,97 +32,14 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSSt
 
 use crate::{App, AppOptions, AppSource, AppView};
 
-/// How a panel floats: its level in the window server's stacking order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PanelLevel {
-    /// With the other windows of the app (below the Dock).
-    Normal,
-    /// Above normal windows, below the Dock, menus and system panels
-    /// (Spotlight).
-    #[default]
-    Floating,
-    /// Just above the Dock: over the Dock and other floating windows, below
-    /// menus.
-    AboveDock,
-}
-
-/// Options of a [`Panel`].
-#[derive(Debug, Clone)]
-pub struct PanelOptions {
-    /// The window title (in the window's title bar when it has one, and the
-    /// window server's name for it).
-    pub title: String,
-    /// The window's content size in points. `None` (the default) opens it at
-    /// 70% of the main screen's visible size, centered.
-    pub size: Option<(i32, i32)>,
-    /// How it floats (default [`PanelLevel::Floating`]).
-    pub level: PanelLevel,
-    /// No title bar and no frame (the default), as palettes and popovers
-    /// have it: the app draws every part of the window. `false` gives a
-    /// titled window with the system's close and minimize buttons.
-    pub borderless: bool,
-    /// The window's background is transparent and the app draws what it
-    /// wants (default `false`).
-    pub transparent: bool,
-    /// Hides the window when the app is not the active one (default
-    /// `false`).
-    pub hides_on_deactivate: bool,
-    /// The window moves when its background is dragged (default `false`): a
-    /// borderless panel is dragged by whatever it draws where the app has no
-    /// control of its own.
-    pub movable_by_background: bool,
-    /// The window takes the keyboard without activating the app (default
-    /// `false`): the app in front keeps its active look while the panel is
-    /// typed into.
-    pub nonactivating: bool,
-    /// The app of the panel: its title and size are not used (the panel's
-    /// are), and a bundle or dev server carries the rest.
-    pub app: AppOptions,
-}
-
-impl Default for PanelOptions {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            size: None,
-            level: PanelLevel::default(),
-            borderless: true,
-            transparent: false,
-            hides_on_deactivate: false,
-            movable_by_background: false,
-            nonactivating: false,
-            app: AppOptions::default(),
-        }
-    }
-}
-
-/// Why a [`Panel`] could not be opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelError {
-    /// The platform does not provide panel windows (`Panel::open` was called
-    /// off the main thread on macOS; Windows and Linux have none).
-    Unsupported(&'static str),
-    /// The options are not usable.
-    Invalid(&'static str),
-}
-
-impl fmt::Display for PanelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unsupported(message) => {
-                write!(f, "panel windows are not supported here: {message}")
-            }
-            Self::Invalid(message) => write!(f, "invalid panel options: {message}"),
-        }
-    }
-}
-
-impl Error for PanelError {}
-
 /// A panel window (see the [module](self)'s documentation): its own window
-/// and app, closed and stopped when it is dropped.
+/// and app, closed and stopped when it is dropped. Drop it on the main
+/// thread, where it was opened.
 ///
-/// Drop it on the main thread, where it was opened.
+/// [`Panel::open`] must run on the main thread, as `run_app` does (Rust
+/// components run on the engine thread). The JS side's `Window.openPanel`
+/// needs a `DesktopCommand` and a hop back to the main thread, which is
+/// future work: a panel is opened from Rust only for now.
 pub struct Panel {
     window: Retained<PanelWindow>,
     app: Rc<AppView>,
@@ -140,7 +56,11 @@ impl Panel {
     ///
     /// [`PanelError::Unsupported`] off the main thread, and
     /// [`PanelError::Invalid`] for a size that is not positive.
-    pub fn open(options: PanelOptions, source: AppSource) -> Result<Self, PanelError> {
+    pub fn open(
+        options: PanelOptions,
+        app: AppOptions,
+        source: AppSource,
+    ) -> Result<Self, PanelError> {
         let mtm = MainThreadMarker::new().ok_or(PanelError::Unsupported(
             "a panel window must be opened on the main thread",
         ))?;
@@ -184,8 +104,8 @@ impl Panel {
         window.setHidesOnDeactivate(options.hides_on_deactivate);
         window.setLevel(level_of(options.level));
         window.setTitle(&NSString::from_str(&options.title));
-        crate::system::open_window(&window, options.app.appearance);
-        let view = AppView::new(mtm, options.app);
+        crate::system::open_window(&window, app.appearance);
+        let view = AppView::new(mtm, app);
         window.setContentView(Some(&view.view()));
         window.center();
         match source {

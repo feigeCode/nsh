@@ -1,10 +1,10 @@
-//! What only desktops have: the window's title and title bar, the
-//! application menu, context menus and keyboard shortcuts (TS
-//! `nsh/desktop`). The platforms get them as [`DesktopCommand`]s on the
-//! root and report a chosen menu item as [`crate::EventKind::Menu`];
-//! mobile platforms ignore them.
+//! What only desktops have: the window's title and title bar, a host's
+//! panel windows ([`PanelOptions`]), the application menu, context menus and
+//! keyboard shortcuts (TS `nsh/desktop`). The platforms get them as
+//! [`DesktopCommand`]s on the root and report a chosen menu item as
+//! [`crate::EventKind::Menu`]; mobile platforms ignore them.
 
-use std::sync::Arc;
+use std::{error::Error, fmt, sync::Arc};
 
 use crate::{
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
@@ -151,6 +151,93 @@ pub enum WindowLevel {
     #[prop(rename = "desktopIcon")]
     DesktopIcon,
 }
+
+/// How a panel window floats ([`PanelOptions::level`]): its level in the
+/// window server's stacking order, from the lowest to the highest.
+///
+/// The platforms map it: macOS's [`Floating`](PanelLevel::Floating) is
+/// `NSFloatingWindowLevel` (3) and its [`AboveDock`](PanelLevel::AboveDock)
+/// the Dock's level (`CGWindowLevelForKey` of `kCGDockWindowLevelKey`, 20)
+/// plus one; Windows raises the window into the band above the taskbar, and
+/// Linux asks the window manager for the dock's layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum PanelLevel {
+    /// With the other windows of the app.
+    Normal,
+    /// Above normal windows: a floating palette, above other apps' windows.
+    #[default]
+    Floating,
+    /// Just above the Dock or the taskbar: over it and other floating
+    /// windows.
+    AboveDock,
+}
+
+/// The look of a panel window (`Panel::open`): the part of its options no
+/// toolkit sees, so every desktop backend takes the same values.
+///
+/// A panel is a second window of the host's own, running an app and engine
+/// of its own beside the main window's; its `AppOptions` and `AppSource`
+/// belong to the platform and come as `Panel::open`'s other arguments.
+#[derive(Debug, Clone)]
+pub struct PanelOptions {
+    /// The window's title.
+    pub title: String,
+    /// The window's content size in points. `None` opens it at 70% of the
+    /// main screen's visible size, centered.
+    pub size: Option<(i32, i32)>,
+    /// How it floats ([`PanelLevel::Floating`] by default).
+    pub level: PanelLevel,
+    /// No title bar and no frame (the default): the app draws every part of
+    /// the window.
+    pub borderless: bool,
+    /// The window's background is transparent, so the app draws what it
+    /// wants around it (false by default).
+    pub transparent: bool,
+    /// Hides the window while the app is not the active one (false by
+    /// default).
+    pub hides_on_deactivate: bool,
+    /// Moves the window when its background is dragged (false by default).
+    pub movable_by_background: bool,
+    /// Takes the keyboard without activating the app (false by default).
+    pub nonactivating: bool,
+}
+
+impl Default for PanelOptions {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            size: None,
+            level: PanelLevel::default(),
+            borderless: true,
+            transparent: false,
+            hides_on_deactivate: false,
+            movable_by_background: false,
+            nonactivating: false,
+        }
+    }
+}
+
+/// Why a panel window could not be opened (`Panel::open`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelError {
+    /// The platform does not provide panel windows.
+    Unsupported(&'static str),
+    /// The options are not usable.
+    Invalid(&'static str),
+}
+
+impl fmt::Display for PanelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported(message) => {
+                write!(f, "panel windows are not supported here: {message}")
+            }
+            Self::Invalid(message) => write!(f, "invalid panel options: {message}"),
+        }
+    }
+}
+
+impl Error for PanelError {}
 
 /// A key of a [`Shortcut`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -793,6 +880,26 @@ mod tests {
         }
         assert_eq!(title_bar_height(Some(px(42.0))), Some(px(42.0)));
         assert_eq!(title_bar_height(Some(px(300.0))), Some(px(200.0)));
+    }
+
+    #[test]
+    fn panel_options_default_to_a_borderless_floating_panel() {
+        let options = PanelOptions::default();
+        assert_eq!(options.title, "");
+        assert_eq!(options.size, None);
+        assert_eq!(options.level, PanelLevel::Floating);
+        assert!(options.borderless);
+        assert!(!options.transparent);
+        assert!(!options.hides_on_deactivate);
+        assert!(!options.movable_by_background);
+        assert!(!options.nonactivating);
+    }
+
+    #[test]
+    fn panel_levels_go_from_normal_to_above_the_dock() {
+        assert!(PanelLevel::Normal < PanelLevel::Floating);
+        assert!(PanelLevel::Floating < PanelLevel::AboveDock);
+        assert_eq!(PanelLevel::default(), PanelLevel::Floating);
     }
 
     #[test]

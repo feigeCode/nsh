@@ -16,17 +16,23 @@ use nsh_platform_windows as platform;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn main() -> impl std::process::Termination {
-    // nsh.json's id: the window's and where the app keeps its data.
+    // nsh.json's id: the windows' and where the app keeps its data.
     let app_id = "com.longbridge.nsh.panel";
+    let options = platform::PanelOptions {
+        title: "Panel".to_owned(),
+        size: Some((420, 300)),
+        // A title bar to close the example with; the default is none.
+        borderless: false,
+        movable_by_background: true,
+        ..Default::default()
+    };
+    let panel_app = platform::AppOptions {
+        app_id: app_id.to_owned(),
+        ..Default::default()
+    };
     let panel = match platform::Panel::open(
-        platform::PanelOptions {
-            title: "Panel".to_owned(),
-            size: Some((420, 300)),
-            // A title bar to close the example with; the default is none.
-            borderless: false,
-            movable_by_background: true,
-            ..Default::default()
-        },
+        options,
+        panel_app,
         platform::AppSource::Rust(platform::Root::of::<panel_native::PanelContent>()),
     ) {
         Ok(panel) => panel,
