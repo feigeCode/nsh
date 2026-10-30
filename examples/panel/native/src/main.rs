@@ -8,6 +8,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use nsh_core::geometry::{Points, Size};
+use nsh_engine::{HostChannel, JsonValue};
 
 #[cfg(target_os = "linux")]
 use nsh_platform_linux as platform;
@@ -28,10 +29,19 @@ fn main() -> impl std::process::Termination {
         movable_by_background: true,
         ..Default::default()
     };
+    // What the panel's app reads as `host.params` when it starts
+    // (`host.params.quick` in TSX: the host and its app share one channel,
+    // `nsh/host`). A launch parameter is read once, when the app starts, so
+    // the host sets it before `Panel::open` loads the app.
+    let host = HostChannel::new();
+    let mut params = serde_json::Map::new();
+    params.insert("quick".to_owned(), JsonValue::from(true));
+    host.set_params(params);
     // A panel runs an app of its own: its id decides where it keeps data
     // (`<data_dir>/<app id>`), apart from the main window's app.
     let panel_app = platform::AppOptions {
         app_id: format!("{app_id}.panel"),
+        host,
         ..Default::default()
     };
     let panel = match platform::Panel::open(

@@ -28,6 +28,12 @@ pub fn PanelApp() -> impl IntoElement {
 }
 
 /// The panel window's content.
+///
+/// The runner gives this panel's app launch parameters through its
+/// `AppOptions::host` (the app reads them as `host.params` from
+/// `nsh/host`). The channel's handlers run on the engine thread, so a TSX
+/// app that hides its own panel from one of them hops back to the main
+/// thread where the window was opened.
 #[component]
 pub fn PanelContent() -> impl IntoElement {
     view()
