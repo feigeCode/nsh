@@ -24,6 +24,11 @@
 //! - [`PanelOptions::hides_on_deactivate`]: GTK 4 cannot observe the app's
 //!   deactivation (there is no per-application activation), so the panel
 //!   hides when it loses the focus instead: the closest signal it has.
+//!   [`PanelOptions::hides_on_resign_key`] asks for the same signal, and the
+//!   two hide the window the same way.
+//! - [`PanelOptions::position`]: GTK 4 has no window positioning (Wayland
+//!   forbids it and X11's is not exposed), so it is ignored and the
+//!   compositor places the window.
 //! - [`PanelOptions::movable_by_background`]: a GTK window moves by its
 //!   title bar when it is decorated; there is no client-side equivalent.
 //!
@@ -54,6 +59,15 @@ use crate::{AppOptions, AppSource, AppView};
 /// the [main window](run_app)'s app, and every app keeps its data in
 /// `<data_dir>/<app id>` ([`AppOptions::data_dir`]), so apps of different
 /// ids stay apart.
+///
+/// The window's title is [`PanelOptions::title`]: the `app`'s
+/// [`AppOptions::title`] names the [main window](run_app), which a panel
+/// does not have.
+///
+/// The `app`'s calls and posts reach the host on the engine thread
+/// ([`AppOptions::host`]): a host that shows, hides or closes a panel from
+/// one of them hands it back to the main thread first, as GTK's windows
+/// belong to it.
 pub struct Panel {
     window: gtk::Window,
     app: Rc<AppView>,
@@ -98,9 +112,10 @@ impl Panel {
                 );
             }
         }
-        if options.hides_on_deactivate {
+        if options.hides_on_deactivate || options.hides_on_resign_key {
             // GTK 4 has no app deactivation: the window losing the focus is
-            // the closest it has.
+            // the closest it has (and the signal a nonactivating panel
+            // asks for too).
             window.connect_is_active_notify(|window| {
                 if !window.is_active() {
                     window.set_visible(false);

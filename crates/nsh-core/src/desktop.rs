@@ -186,6 +186,13 @@ pub struct PanelOptions {
     /// the rest of the API sizes windows. `None` (the default) opens it at
     /// 70% of the main screen's visible size, centered.
     pub size: Option<Size<Points>>,
+    /// Where the window opens, in points: the screen coordinates of its
+    /// top-left corner, measured from the top-left corner of the primary
+    /// screen (down and to the right), as [`WindowFrame::x`] and
+    /// [`WindowFrame::y`] measure a window's. `None` (the default) centers
+    /// it on the main screen. GTK 4 has no window positioning, so Linux
+    /// ignores it.
+    pub position: Option<(Points, Points)>,
     /// How it floats ([`PanelLevel::Floating`] by default).
     pub level: PanelLevel,
     /// No title bar and no frame (the default): the app draws every part of
@@ -195,8 +202,21 @@ pub struct PanelOptions {
     /// wants around it (false by default).
     pub transparent: bool,
     /// Hides the window while the app is not the active one (false by
-    /// default).
+    /// default). A nonactivating panel never deactivates the app, so it
+    /// never fires for one: a panel that takes the keyboard without
+    /// activating the app wants [`hides_on_resign_key`](Self::hides_on_resign_key)
+    /// instead.
     pub hides_on_deactivate: bool,
+    /// Hides the window when it loses the keyboard's focus (false by
+    /// default): a click on another window, or a shortcut that moves the
+    /// focus elsewhere, takes the panel off screen.
+    ///
+    /// This is the signal a nonactivating panel has, which never deactivates
+    /// the app; a panel that does activate it can use either. GTK 4 has no
+    /// per-window focus notifications in the same way, so Linux hides the
+    /// window when it loses the focus, as it does for
+    /// [`hides_on_deactivate`](Self::hides_on_deactivate).
+    pub hides_on_resign_key: bool,
     /// Moves the window when its background is dragged (false by default).
     pub movable_by_background: bool,
     /// Takes the keyboard without activating the app (false by default).
@@ -208,10 +228,12 @@ impl Default for PanelOptions {
         Self {
             title: String::new(),
             size: None,
+            position: None,
             level: PanelLevel::default(),
             borderless: true,
             transparent: false,
             hides_on_deactivate: false,
+            hides_on_resign_key: false,
             movable_by_background: false,
             nonactivating: false,
         }
@@ -892,10 +914,12 @@ mod tests {
         let options = PanelOptions::default();
         assert_eq!(options.title, "");
         assert_eq!(options.size, None);
+        assert_eq!(options.position, None);
         assert_eq!(options.level, PanelLevel::Floating);
         assert!(options.borderless);
         assert!(!options.transparent);
         assert!(!options.hides_on_deactivate);
+        assert!(!options.hides_on_resign_key);
         assert!(!options.movable_by_background);
         assert!(!options.nonactivating);
     }

@@ -13,20 +13,29 @@
 //! components run on the engine thread, so a panel is opened by the host's
 //! main-thread code (as an app's runner does), not from a component's event
 //! handler.
+//!
+//! A [`PanelOptions::position`] places the window's top-left corner from
+//! the primary screen's top-left one, as [`WindowFrame`]'s `x` and `y` do.
+//! [`PanelOptions::hides_on_resign_key`] listens for the window losing the
+//! keyboard (`windowDidResignKey:`), the signal a nonactivating panel has.
 
 use std::{cell::RefCell, rc::Rc};
 
 use nsh_core::desktop::WindowFrame;
 pub use nsh_core::desktop::{PanelError, PanelLevel, PanelOptions};
 use nsh_core::geometry::{Points, Size};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2::{
+    MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained, runtime::ProtocolObject,
+};
 use objc2_app_kit::{
     NSApplicationActivationOptions, NSBackingStoreType, NSColor, NSFloatingWindowLevel,
     NSNormalWindowLevel, NSPanel, NSResponder, NSRunningApplication, NSScreen, NSWindow,
-    NSWindowLevel, NSWindowStyleMask, NSWorkspace,
+    NSWindowDelegate, NSWindowLevel, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_graphics::{CGWindowLevelForKey, CGWindowLevelKey};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 
 use crate::{App, AppOptions, AppSource, AppView};
 
@@ -44,6 +53,15 @@ use crate::{App, AppOptions, AppSource, AppView};
 /// the [main window](run_app)'s app, and every app keeps its data in
 /// `<data_dir>/<app id>` ([`AppOptions::data_dir`]), so apps of different
 /// ids stay apart.
+///
+/// The window's title is [`PanelOptions::title`]: the `app`'s
+/// [`AppOptions::title`] names the [main window](run_app), which a panel
+/// does not have.
+///
+/// The `app`'s calls and posts reach the host on the engine thread
+/// ([`AppOptions::host`]): a host that shows, hides or closes a panel from
+/// one of them hands it back to the main thread first (a main-queue
+/// dispatch), as windows belong to it.
 pub struct Panel {
     window: Retained<PanelWindow>,
     app: Rc<AppView>,
@@ -109,6 +127,26 @@ impl Panel {
         let view = AppView::new(mtm, app);
         window.setContentView(Some(&view.view()));
         window.center();
+        if let Some((x, y)) = options.position {
+            // The same conversion `WindowFrame`'s `x` and `y` take: the
+            // window's top-left corner, from the primary screen's.
+            crate::chrome::set_frame(
+                &window,
+                &WindowFrame {
+                    x: Some(x),
+                    y: Some(y),
+                    width: None,
+                    height: None,
+                    animated: Some(false),
+                },
+            );
+        }
+        if options.hides_on_resign_key {
+            // AppKit does not retain a window's delegate: the panel keeps
+            // the window (its own delegate) alive for as long as it may be
+            // called.
+            window.setDelegate(Some(ProtocolObject::from_ref(&*window)));
+        }
         match source {
             AppSource::Rust(root) => view.load(App::Rust(root)),
             AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
@@ -240,6 +278,16 @@ define_class!(
         #[unsafe(method(canBecomeMainWindow))]
         fn can_become_main(&self) -> bool {
             false
+        }
+    }
+
+    unsafe impl NSWindowDelegate for PanelWindow {
+        // A panel that hides on resign loses the keyboard to another window:
+        // take it off screen, without touching the app in front (the user
+        // chose it).
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            self.orderOut(None);
         }
     }
 );

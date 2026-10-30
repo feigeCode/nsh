@@ -20,13 +20,18 @@
 //! shows it without activating the app (and `hide` hands the focus back to
 //! the window that was in front), and [`PanelLevel::Floating`] and
 //! [`PanelLevel::AboveDock`] are both `HWND_TOPMOST` (Windows has no
-//! desktop-icon level to float above instead). [`PanelOptions::transparent`],
-//! [`PanelOptions::hides_on_deactivate`] and
+//! desktop-icon level to float above instead). [`PanelOptions::position`]
+//! places the window's outer frame in screen points at its own scale, and
+//! [`PanelOptions::hides_on_resign_key`] hides it from the window procedure,
+//! as it loses the keyboard (`WM_KILLFOCUS`): a nonactivating panel never
+//! gets an activation message.
+//!
+//! [`PanelOptions::transparent`], [`PanelOptions::hides_on_deactivate`] and
 //! [`PanelOptions::movable_by_background`] have no Win32 equivalent here
 //! and do nothing: transparency would need a layered window the Direct2D
 //! swap chain does not draw through, hiding on deactivation would need the
-//! window procedure's activation messages, and moving by background would
-//! need its hit tests.
+//! app's activation, which a panel does not change, and moving by
+//! background would need its hit tests.
 
 use std::{
     cell::{Cell, RefCell},
@@ -70,6 +75,15 @@ use crate::{AppOptions, AppSource, AppView};
 /// the [main window](run_app)'s app, and every app keeps its data in
 /// `<data_dir>/<app id>` ([`AppOptions::data_dir`]), so apps of different
 /// ids stay apart.
+///
+/// The window's title is [`PanelOptions::title`]: the `app`'s
+/// [`AppOptions::title`] names the [main window](run_app), which a panel
+/// does not have.
+///
+/// The `app`'s calls and posts reach the host on the engine thread
+/// ([`AppOptions::host`]): a host that shows, hides or closes a panel from
+/// one of them hands it back to the main thread first, as windows belong to
+/// the thread that runs the message loop.
 pub struct Panel {
     app: Rc<AppView>,
     /// The level the window has, to re-assert it when it shows again.
@@ -104,6 +118,9 @@ impl Panel {
             }
         };
         apply(&view, &options, size);
+        if let Some((x, y)) = options.position {
+            place(&view, x, y);
+        }
         match source {
             AppSource::Rust(root) => view.load(App::Rust(root)),
             AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
@@ -311,6 +328,10 @@ fn apply(view: &AppView, options: &PanelOptions, size: (i32, i32)) {
             ex_style |= WS_EX_NOACTIVATE.0;
         }
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex_style as isize);
+        // The window procedure hides the panel when it loses the keyboard,
+        // when the options ask for it (no activation message reaches a
+        // panel's window otherwise).
+        crate::window::set_hides_on_resign_key(hwnd, options.hides_on_resign_key);
         // A window's size is its outer frame, a panel's is its content: a
         // borderless popup has the whole window as its client area, so it
         // is sized to the points the panel asked for, once the frame is
@@ -351,6 +372,29 @@ fn apply(view: &AppView, options: &PanelOptions, size: (i32, i32)) {
             flags,
         );
     }
+}
+
+/// Moves the window: `position` is the screen coordinates, in points at the
+/// window's scale, of its top-left corner (Win32's outer frame).
+fn place(view: &AppView, x: Points, y: Points) {
+    let hwnd = view.hwnd();
+    if hwnd.is_invalid() {
+        return;
+    }
+    let scale = view.surface().scale();
+    let (x, y) = ((x.0 * scale).round() as i32, (y.0 * scale).round() as i32);
+    // SAFETY: a plain call on a live window; its size and level stay.
+    let _ = unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE,
+        )
+    };
 }
 
 /// The z-order a level is: the closest Win32 has to a panel's level.
