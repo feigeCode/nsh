@@ -40,7 +40,7 @@
 
 use std::{cell::Cell, rc::Rc};
 
-use gtk::prelude::*;
+use gtk4::{self as gtk, prelude::*};
 pub use nsh_core::desktop::{PanelError, PanelLevel, PanelOptions};
 use nsh_core::{
     desktop::WindowFrame,
@@ -89,6 +89,12 @@ impl Panel {
         source: AppSource,
     ) -> Result<Self, PanelError> {
         let (width, height) = panel_size(options.size)?;
+        // A panel may open before `run_app` (which runs the main loop from
+        // its `gtk::Application`): GTK must be initialized for its widgets.
+        gtk::init().map_err(|error| {
+            log::error!("GTK could not be initialized: {error}");
+            PanelError::Invalid("GTK could not be initialized")
+        })?;
         let window = gtk::Window::builder()
             .title(options.title.as_str())
             .default_width(width)
