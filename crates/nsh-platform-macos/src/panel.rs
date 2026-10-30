@@ -125,6 +125,12 @@ impl Panel {
         window.setTitle(&NSString::from_str(&options.title));
         crate::system::open_window(&window, app.appearance);
         let view = AppView::new(mtm, app);
+        if options.transparent {
+            // The window is see-through; its content surface must be too
+            // (`system::follow_background` keeps a transparent background
+            // unless the app paints an opaque one).
+            view.set_transparent();
+        }
         window.setContentView(Some(&view.view()));
         window.center();
         if let Some((x, y)) = options.position {
