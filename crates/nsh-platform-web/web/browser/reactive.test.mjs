@@ -686,6 +686,27 @@ test("merged props answer `in` from their sources, getters included", { skip: !p
   close();
 });
 
+test("what a component's children read runs them alone, never the expression that made the component", { skip: !path }, async () => {
+  const { api, dom, close } = await fixture();
+  const seq = api.signal(0);
+  let made = 0, runs = 0, dispose;
+  // A component returning a fragment's dynamic child, and one returning an
+  // array holding a function.
+  const Fragment = () => { made++; return () => { runs++; return `seq ${seq()}`; }; };
+  const Items = () => { made++; return ["a", () => { runs++; return seq(); }]; };
+  api.root(stop => {
+    dispose = stop;
+    for (const Component of [Fragment, Items]) {
+      const kind = "message";
+      dom.rt.insert(dom.rt.element("view"), () => kind === "message" ? dom.rt.component(Component, {}) : null);
+    }
+  });
+  seq.set(1); seq.set(2);
+  assert.equal(made, 2);
+  assert.equal(runs, 6);
+  dispose(); close();
+});
+
 test("native video loads nest their size as the native JS host does", { skip: !path }, async () => {
   const f = await fixture();
   try {
