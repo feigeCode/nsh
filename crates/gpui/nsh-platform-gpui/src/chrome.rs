@@ -1300,6 +1300,7 @@ fn native_items(
     items: &[MenuItem],
     entries: &mut Vec<(u32, Option<MenuRole>)>,
     bindings: &mut Vec<gpui::KeyBinding>,
+    cx: &App,
 ) -> Vec<gpui::MenuItem> {
     items
         .iter()
@@ -1312,11 +1313,22 @@ fn native_items(
                 };
                 entries.push((a.id, a.role));
                 if let Some(s) = a.shortcut.or_else(|| a.role.and_then(|r| r.shortcut(true))) {
-                    bindings.push(gpui::KeyBinding::new(
+                    // A runtime-built keystroke (`gpui_keystroke`) cannot go
+                    // through `KeyBinding::new`, which takes a `&'static str`
+                    // and panics on a parse error; `load` parses it against
+                    // the host OS and lets a bad one be skipped.
+                    let predicate = gpui::KeyBindingContextPredicate::parse(MENU_SHORTCUT_CONTEXT)
+                        .map(gpui::KeyBindingContextPredicate::into);
+                    if let Ok(binding) = gpui::KeyBinding::load(
                         &gpui_keystroke(&s),
-                        action.clone(),
-                        Some(MENU_SHORTCUT_CONTEXT),
-                    ));
+                        Box::new(action.clone()),
+                        predicate.ok(),
+                        false,
+                        None,
+                        cx,
+                    ) {
+                        bindings.push(binding);
+                    }
                 }
                 gpui::MenuItem::action(menus::label(a), action)
                     .checked(a.checked == Some(true))
@@ -1328,7 +1340,7 @@ fn native_items(
                 items,
             } => gpui::MenuItem::submenu(gpui::Menu {
                 name: label.clone().into(),
-                items: native_items(surface, items, entries, bindings),
+                items: native_items(surface, items, entries, bindings, cx),
                 disabled: !enabled,
             }),
         })
@@ -1370,7 +1382,7 @@ fn set_native_menus(surface: &Surface, cx: &mut App) {
                 items,
             } => Some(gpui::Menu {
                 name: label.clone().into(),
-                items: native_items(surface.key(), items, &mut entries, &mut bindings),
+                items: native_items(surface.key(), items, &mut entries, &mut bindings, cx),
                 disabled: !enabled,
             }),
             _ => None,

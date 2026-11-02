@@ -83,6 +83,44 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 
+# The GPUI backend tracks gpui-fast v0.1.12 while the crates.io pins are still
+# 0.1.9; patch the whole gpui-fast family (leaf crates and the gpui-pre-*
+# shims) to one branch so a single source builds, the same block the navop
+# host workspace uses. Local-only: never merged upstream.
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-apple = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-bench-metrics = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-collections = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-derive-refineable = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-http-client = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-http-client-tls = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-linux = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-macos = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-macros = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-platform = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-refineable = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-reqwest-client = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-scheduler = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-shared-string = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-sum-tree = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-util = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-web = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-wgpu = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-windows = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-zlog = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-ztracing = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-pre-ztracing-macro = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-apple = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-linux = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-macros = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-macos = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-platform = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-web = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-wgpu = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+gpui-fast-windows = { git = "https://github.com/feigeCode/gpui-fast.git", branch = "release/v0.1.12" }
+
 # Keep the interpreter and layout fast even in debug builds; they dominate runtime cost.
 [profile.dev.package.quickjs-jit-sys]
 opt-level = 3
