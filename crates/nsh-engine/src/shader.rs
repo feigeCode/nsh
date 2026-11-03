@@ -856,7 +856,14 @@ impl ShaderView {
                 continue;
             }
             if i == newest && r.serial > self.frame.serial {
-                let data = r.buffer.slice(..).get_mapped_range();
+                let data = match r.buffer.slice(..).get_mapped_range() {
+                    Ok(data) => data,
+                    Err(_) => {
+                        r.buffer.unmap();
+                        r.state.store(state::IDLE, Ordering::Release);
+                        continue;
+                    }
+                };
                 self.frame.pixels.clear();
                 self.frame.pixels.extend_from_slice(&data);
                 drop(data);

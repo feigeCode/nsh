@@ -74,7 +74,7 @@ rustc-hash = "2.1"
 naga = { version = "29", default-features = false, features = ["wgsl-in"] }
 # The native backends' shader renderer (`nsh_engine::shader`), the version GPUI uses:
 # WGSL only, each OS's own GPU API (and GL where Vulkan may be missing).
-wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "metal", "vulkan", "gles"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl", "dx12", "metal", "vulkan", "gles"] }
 pollster = "0.4"
 proc-macro2 = "1"
 quote = "1"
