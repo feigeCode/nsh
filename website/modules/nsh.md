@@ -1916,6 +1916,8 @@ Calls the host's function `name` with `args` (any JSON value; `null` without one
 | `ETIMEDOUT` | The host did not answer in time |
 | `ERR_NSH_QUOTA_EXCEEDED` | 1024 calls already wait for the embedding app's answers |
 
+The host may also reject with an `Error` of its own: the class and the fields it names (`code`, `retryable`, `details`, ...) are on the error the app catches, so a failure the app handles keeps its code; a host error that names no `code` has `ERR_NSH_HOST_ERROR`.
+
 A name that is no valid name (1 to 128 of `A`–`Z`, `a`–`z`, `0`–`9`, `_`, `.`, `:`, `-`, without `..`) rejects with a `TypeError`.
 
 A call waits 30 seconds for the host's answer, then rejects with `ETIMEDOUT`; an answer that comes later is dropped. `options.timeout` sets the wait in milliseconds, `0` for no limit; a timeout so large the clock never gets there (about 1e22 ms) waits without limit too, and a negative, `NaN` or infinite one rejects the call with a `RangeError`. The time is the app's, as its timers': in `nsh test` with a manual clock it moves with the clock.

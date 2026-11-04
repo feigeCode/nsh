@@ -52,7 +52,19 @@ pub fn no_host() -> JsError {
 /// `message` (its handler failed, or it handles no such name): the host's
 /// message, [`codes::HOST_ERROR`].
 pub fn host_error(message: &str) -> JsError {
-    JsError::Error(message.to_owned()).with_code(codes::HOST_ERROR)
+    with_host_code(JsError::Error(message.to_owned()))
+}
+
+/// `error`, the embedding app's answer to a call, with [`codes::HOST_ERROR`]
+/// as its `code` when it names none: an app catches the same error whatever
+/// entry the embedding app's side took, and its own class and fields when it
+/// names a code.
+pub fn with_host_code(error: JsError) -> JsError {
+    if error.code().is_some() {
+        error
+    } else {
+        error.with_code(codes::HOST_ERROR)
+    }
 }
 
 /// What a call or post of `name`, which no host function may have

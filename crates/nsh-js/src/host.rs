@@ -743,8 +743,13 @@ impl Host {
     }
 
     /// Settles call `id` (`host.call`) with the embedding app's answer, or
-    /// rejects it with the message.
-    pub fn host_reply(&self, id: u64, result: Result<nsh_core::JsonValue, String>) {
+    /// rejects it with its error (a message of its own, `code` and fields
+    /// included).
+    pub fn host_reply(
+        &self,
+        id: u64,
+        result: Result<nsh_core::JsonValue, nsh_core::element::JsError>,
+    ) {
         if !self.cx.is_live() {
             return;
         }

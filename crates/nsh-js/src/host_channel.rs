@@ -18,8 +18,9 @@
 //! A call never throws: what fails rejects it, with the `code`s of
 //! `nsh_core::host_channel`'s errors (`ERR_ACCESS_DENIED` for a name
 //! `capabilities.host` does not grant, `ETIMEDOUT`, `ERR_NSH_QUOTA_EXCEEDED`
-//! past [`MAX_PENDING_CALLS`], `ERR_NSH_HOST_ERROR` for the embedding app's
-//! own error); wrong arguments reject with a `TypeError` or `RangeError`.
+//! past [`MAX_PENDING_CALLS`], the embedding app's own error with the `code`
+//! and fields it names there, `ERR_NSH_HOST_ERROR` when it names none);
+//! wrong arguments reject with a `TypeError` or `RangeError`.
 //! `post` is synchronous: it throws for a wrong or refused name, and a
 //! post without an embedding app is dropped without a word.
 
@@ -403,13 +404,14 @@ pub(crate) fn deliver(cx: Ctx, name: &str, data: JsonValue) {
     }
 }
 
-/// Settles call `id` with the embedding app's answer, or its error
-/// message (`ERR_NSH_HOST_ERROR`).
-pub(crate) fn settle(cx: Ctx, id: u64, result: Result<JsonValue, String>) {
+/// Settles call `id` with the embedding app's answer, or its error: the
+/// class and the fields (`code`, `retryable`, ...) it names, or a plain
+/// message, which gets `ERR_NSH_HOST_ERROR`.
+pub(crate) fn settle(cx: Ctx, id: u64, result: Result<JsonValue, JsError>) {
     finish(
         cx,
         id,
-        result.map_err(|message| nsh_core::host_channel::host_error(&message)),
+        result.map_err(nsh_core::host_channel::with_host_code),
     );
 }
 
@@ -465,9 +467,11 @@ export interface Host {
    * renders stops with the component. */
   on<T = HostValue>(name: string, listener: (data: T) => void): () => void;
   /** Calls the embedding app's handler of `name` with `data`: the promise
-   * resolves with its answer, or rejects with an `Error` with the message the
-   * handler gave and `code` `"ERR_NSH_HOST_ERROR"`, also at once when the
-   * embedding app handles no `name`. It rejects with `code`
+   * resolves with its answer, or rejects with the error the embedding app
+   * gave: a message of its own with `code` `"ERR_NSH_HOST_ERROR"`, or the
+   * `code` and the fields it named there (`retryable`, `details`, ...). It
+   * also rejects at once when the embedding app handles no `name`. It
+   * rejects with `code`
    * `"ERR_ACCESS_DENIED"` (`permission` `"host"`, `resource` the name) when
    * `capabilities.host` does not grant `name`, `"ETIMEDOUT"` once
    * `options.timeout` milliseconds passed (30000 unless set; 0 waits as long
@@ -593,7 +597,10 @@ host.post("seen", "home");
         assert_eq!(calls[1].2, json!([1, 2]));
         assert_eq!(*bridge.posts.borrow(), [("seen".to_owned(), json!("home"))]);
         assert_eq!(pending_calls(&host), 2);
-        host.host_reply(calls[1].0, Err("disk full".into()));
+        host.host_reply(
+            calls[1].0,
+            Err(nsh_core::element::JsError::Error("disk full".into())),
+        );
         host.host_reply(calls[0].0, Ok(json!({ "name": "Ada" })));
         // A second answer, or one for no call, is ignored.
         host.host_reply(calls[0].0, Ok(json!(null)));
@@ -603,6 +610,40 @@ host.post("seen", "home");
             ["save ERR_NSH_HOST_ERROR disk full", "profile Ada"]
         );
         assert_eq!(pending_calls(&host), 0);
+    }
+
+    #[test]
+    fn host_errors_keep_their_code_and_fields() {
+        let host = Host::new().unwrap();
+        let bridge = Rc::new(Bridge::default());
+        allow_host(&host);
+        host.set_host_bridge(bridge.clone());
+        host.eval_source(&format!(
+            r#"{REPORT}
+host.call("demo").catch((e) => report([e.name, e.code, e.retryable, e.details.kind, e.message].join(" ")));
+host.call("typed").catch((e) => report(e.name + " " + e.code));
+"#
+        ))
+        .unwrap();
+        host.run_jobs();
+        let calls = bridge.calls.borrow().clone();
+        assert_eq!(calls.len(), 2);
+        let error = nsh_core::element::JsError::Error("the demo failed".into())
+            .with_code("NAVOP_DEMO")
+            .with("retryable", true)
+            .with("details", json!({ "kind": "demo", "at": 3 }));
+        host.host_reply(calls[0].0, Err(error));
+        host.host_reply(
+            calls[1].0,
+            Err(nsh_core::element::JsError::Type("wrong".into()).with_code("NAVOP_TYPE")),
+        );
+        assert_eq!(
+            reported(&host),
+            [
+                "Error NAVOP_DEMO true demo the demo failed",
+                "TypeError NAVOP_TYPE"
+            ]
+        );
     }
 
     #[test]

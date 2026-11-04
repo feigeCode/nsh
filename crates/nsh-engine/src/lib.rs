@@ -916,8 +916,9 @@ enum Message {
     /// The embedding app's event (`nsh/host`'s `host.on`): its name and
     /// data.
     HostEvent(String, nsh_core::JsonValue),
-    /// The embedding app's answer to call `.0` (`host.call`).
-    HostReply(u64, Result<nsh_core::JsonValue, String>),
+    /// The embedding app's answer to call `.0` (`host.call`): a value, or
+    /// the error the app's promise rejects with.
+    HostReply(u64, Result<nsh_core::JsonValue, nsh_core::element::JsError>),
     /// The embedding app's URL handler answered URL request `id`: it took
     /// the URL, or the platform opens it.
     UrlHandled {

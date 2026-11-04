@@ -408,16 +408,31 @@ impl HostCall {
     }
 
     /// Fails the call: the app's promise rejects with an `Error` of
-    /// `message`.
+    /// `message` (its `code` is `ERR_NSH_HOST_ERROR`).
     pub fn reject(self, message: impl Into<String>) {
         self.reply(Err(message.into()));
     }
 
+    /// Fails the call with `error`: the app's promise rejects with the JS
+    /// class and the properties `error` names (its `code`, `retryable`,
+    /// `details`, ...), so a failure the app handles keeps its code without
+    /// encoding it in the message. An error without a `code` gets
+    /// `ERR_NSH_HOST_ERROR`, as [`HostCall::reject`] makes it.
+    pub fn reject_error(self, error: nsh_core::element::JsError) {
+        self.reply_error(Err(error));
+    }
+
     /// Answers the call with `result` ([`HostCall::resolve`],
     /// [`HostCall::reject`]).
-    pub fn reply(mut self, result: Result<JsonValue, String>) {
+    pub fn reply(self, result: Result<JsonValue, String>) {
+        self.reply_error(result.map_err(nsh_core::element::JsError::Error));
+    }
+
+    /// Answers the call with `result` ([`HostCall::resolve`],
+    /// [`HostCall::reject_error`]): an error keeps its class and fields.
+    pub fn reply_error(mut self, result: Result<JsonValue, nsh_core::element::JsError>) {
         if let Some(reply) = self.reply.take() {
-            reply.reply(result);
+            reply.reply_error(result);
         }
     }
 
@@ -522,13 +537,29 @@ impl HostReply {
         self.reply(Ok(value));
     }
 
-    /// The app's promise rejects with an `Error` of `message`.
+    /// The app's promise rejects with an `Error` of `message` (its `code`
+    /// is `ERR_NSH_HOST_ERROR`).
     pub fn reject(self, message: impl Into<String>) {
         self.reply(Err(message.into()));
     }
 
+    /// The app's promise rejects with `error`: its JS class and the
+    /// properties it names (`code`, `retryable`, `details`, ...). An error
+    /// without a `code` gets `ERR_NSH_HOST_ERROR`, as
+    /// [`HostReply::reject`] makes it.
+    pub fn reject_error(self, error: nsh_core::element::JsError) {
+        self.reply_error(Err(error));
+    }
+
     /// Answers with `result`. An app that stopped meanwhile drops it.
-    pub fn reply(mut self, result: Result<JsonValue, String>) {
+    pub fn reply(self, result: Result<JsonValue, String>) {
+        self.reply_error(result.map_err(nsh_core::element::JsError::Error));
+    }
+
+    /// Answers with `result`, an error keeping its class and fields. The
+    /// app catches the same error from this and from [`HostReply::reply`]
+    /// for the same `JsError`.
+    pub fn reply_error(mut self, result: Result<JsonValue, nsh_core::element::JsError>) {
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(Message::HostReply(self.id, result));
         }
@@ -542,7 +573,8 @@ impl Drop for HostReply {
                 "host.call(\"{}\"): the embedding app did not answer",
                 self.name
             );
-            let _ = tx.send(Message::HostReply(self.id, Err(message)));
+            let error = nsh_core::element::JsError::Error(message);
+            let _ = tx.send(Message::HostReply(self.id, Err(error)));
         }
     }
 }
@@ -655,5 +687,34 @@ mod tests {
             Message::HostEvent(name, data) if name == "open" && data == json!(1)
         ));
         drop(current);
+    }
+
+    #[test]
+    fn reject_and_reject_error_answer_alike() {
+        use nsh_core::element::JsError;
+
+        let expected = JsError::Error("disk full".into());
+        let (tx, rx) = crossbeam_channel::unbounded();
+        HostReply {
+            id: 7,
+            name: "demo".into(),
+            tx: Some(tx.clone()),
+        }
+        .reject("disk full");
+        HostReply {
+            id: 7,
+            name: "demo".into(),
+            tx: Some(tx),
+        }
+        .reject_error(expected.clone());
+        let mut answers = Vec::new();
+        for message in rx.try_iter() {
+            match message {
+                Message::HostReply(7, Err(error)) => answers.push(error),
+                _ => panic!("expected a failed answer to call 7"),
+            }
+        }
+        assert_eq!(answers.len(), 2);
+        assert!(answers.iter().all(|error| *error == expected));
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use nsh_core::{
     EventKind, EventPayload, NodeId, Op,
-    element::{JsEvent, JsHost, ThemeTokens, Tokens},
+    element::{IntoThrown, JsEvent, JsHost, ThemeTokens, Tokens},
 };
 use nsh_engine::{
     Environment,
@@ -297,7 +297,7 @@ impl Host for Runtime {
             })(),
         );
     }
-    fn host_reply(&self, id: u64, result: Result<nsh_core::JsonValue, String>) {
+    fn host_reply(&self, id: u64, result: Result<nsh_core::JsonValue, nsh_core::element::JsError>) {
         let ok = result.is_ok();
         self.event(
             "hostReply",
@@ -307,7 +307,11 @@ impl Host for Runtime {
                     Value(if ok { 3 } else { 2 }),
                     match result {
                         Ok(data) => Value(self.bindings.json(&data)?.0[0] as u32),
-                        Err(error) => Value::string(&error)?,
+                        // The error the app's `catch` gets: the class and
+                        // the fields (`code`, ...) the embedding app named.
+                        Err(error) => self
+                            .modules
+                            .error(&nsh_core::host_channel::with_host_code(error).into_thrown())?,
                     },
                 ])
             })(),

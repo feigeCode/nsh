@@ -1889,6 +1889,8 @@ call(name: string, args?: unknown, options?: { timeout?: number }): Promise<unkn
 | `ETIMEDOUT` | 宿主没有及时应答 |
 | `ERR_NSH_QUOTA_EXCEEDED` | 已有 1024 个调用在等待嵌入应用的应答 |
 
+宿主也可以用它自己的 `Error` 拒绝：它给出的类与字段（`code`、`retryable`、`details` …）都在应用 catch 到的错误上，应用能处理的失败因此保留自己的码；没有给出 `code` 的宿主错误，其 `code` 为 `ERR_NSH_HOST_ERROR`。
+
 不是合法名字（由 `A`–`Z`、`a`–`z`、`0`–`9`、`_`、`.`、`:`、`-` 组成，长度 1 到 128，不含 `..`）的 `name` 以 `TypeError` 拒绝。
 
 调用最多等待宿主应答 30 秒，之后以 `ETIMEDOUT` 拒绝，之后才到的应答会被丢弃。`options.timeout` 以毫秒设置等待时间，`0` 表示不限时；大到时钟永远走不到的值（约 1e22 毫秒）同样不限时，负数、`NaN` 或无穷大则以 `RangeError` 拒绝调用。计时用的是应用的时间，与它的定时器一致：在使用手动时钟的 `nsh test` 中随时钟推进。
