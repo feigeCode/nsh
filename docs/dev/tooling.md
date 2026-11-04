@@ -405,7 +405,10 @@ Headless runs play the platform's part NSH's protocol defines, and refuse what o
   parameters, `host.handlers` the channel's handlers (`module.rs` `host_setup`: a value answers at once, a function's
   calls go over a channel to `RouteServer`, which `serve` answers on the test file's VM while a step runs, as a route's
   function; each call and post the handlers get is recorded for `app.host.calls()` / `posts()`), and
-  `app.host.send` is `Headless::send_host_event`, a step;
+  `app.host.send` is `Headless::send_host_event`, a step. The handler names are the app's `capabilities.host`
+  (`run.rs` `grant_host_handlers`, at `Session::open`): an ABI v2 page declares none (its embedding app grants the
+  functions it handles), so a test grants them, joined with whatever the page's `nsh.json` declares, and a name
+  the test does not handle stays ungranted (`Capabilities::all` when the page declared nothing);
 - images are not loaded: an image's size (`ImageInfo`) is answered with an error, as a failed load (a `TextView` asks
   for the sizes of its images); an image or files on the clipboard fail the step that asked (`Screen::take_unsupported`).
 

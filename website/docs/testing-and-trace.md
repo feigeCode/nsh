@@ -183,6 +183,10 @@ the host app: `host.params` gives the launch parameters the app reads at start, 
 call's data that returns the answer (or a promise of it). What the function throws rejects the call, as a host app's
 error does. A call of a name `handlers` does not list fails, as it does in a host app that handles none.
 
+The names `handlers` lists are the app's [`capabilities.host`](../modules/nsh.md#capability): the test plays the
+host app, which owns the functions it handles, so a page does not declare them (an ABI v2 host app grants them as it
+installs its own). The page's declaration, if it has one, stays granted too: the two are a union.
+
 ```tsx
 const app = await open("./App.tsx", {
   host: {

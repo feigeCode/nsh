@@ -252,7 +252,10 @@ impl Testing {
     /// on a phone-sized headless engine of its own, with what `options`
     /// set up, and resolves once it rendered and is quiet. Its requests
     /// fail unless `options.network` lists them; its storage starts with
-    /// `options.storage`. With `nsh test --target`, an option the target's
+    /// `options.storage`; the handlers of `options.host` are its
+    /// `capabilities.host` names, joined with what its `nsh.json` declares
+    /// (the test plays the embedding app, so a page need not declare them).
+    /// With `nsh test --target`, an option the target's
     /// platform cannot honor rejects (`ERR_NSH_TEST_UNSUPPORTED`, naming
     /// it): `width` and `height` on iOS and Android, a `platform` the
     /// target is not (a phone's on a desktop, a desktop's on a phone, the
@@ -261,12 +264,7 @@ impl Testing {
         let session = Session::current().map_err(JsError::Error)?;
         let options = options.unwrap_or_default();
         let (network, mut server) = network_setup(options.network);
-        let host_handlers = options
-            .host
-            .as_ref()
-            .and_then(|h| h.handlers.as_ref())
-            .is_some_and(|h| !h.0.is_empty());
-        let (host, record) = host_setup(options.host, &mut server);
+        let (host, record, host_names) = host_setup(options.host, &mut server);
         let manual_clock = options.clock.is_some();
         let launch = Launch {
             storage: options.storage.unwrap_or_default(),
@@ -283,7 +281,7 @@ impl Testing {
                 .clock
                 .map(|c| c.time.map_or_else(std::time::SystemTime::now, |t| t.0)),
             host,
-            host_handlers,
+            host_names,
         };
         let opening = blocking(move || session.open(&entry, launch));
         let (app, storage, requests) = serve(server.as_ref(), opening)
@@ -433,9 +431,12 @@ pub struct HostOptions {
     /// The handlers of the app's `host.call(name, data)` and
     /// `host.post(name, data)`, by name: a value answers every call with
     /// it; a function gets the data and returns the answer (or a promise
-    /// of it), and what it throws rejects the call. A call of a name not
-    /// listed fails, as with an embedding app that handles none; a post of
-    /// one is dropped (`app.host.posts()` lists those of the names listed).
+    /// of it), and what it throws rejects the call. The names are the
+    /// app's `capabilities.host`: the test plays the embedding app, so a
+    /// page need not declare them (they join what it declares). A call of a
+    /// name not listed fails, as with an embedding app that handles none; a
+    /// post of one is dropped (`app.host.posts()` lists those of the names
+    /// listed).
     pub handlers: Option<HostHandlers>,
 }
 
@@ -535,13 +536,15 @@ pub struct HostMessage {
 type HostRecord = Arc<Mutex<Vec<(HostMessage, bool)>>>;
 
 /// The embedding app's channel `options` describe, for the app the test
-/// opens, and the record of what its handlers get. The handlers' JS
-/// functions join `server`, which answers their calls on the test file's
-/// VM.
+/// opens, the record of what its handlers get, and the names those handlers
+/// answer: the test's host grants the app those `capabilities.host` names
+/// (a test plays the embedding app, so a page need not declare them). The
+/// handlers' JS functions join `server`, which answers their calls on the
+/// test file's VM.
 fn host_setup(
     options: Option<HostOptions>,
     server: &mut Option<RouteServer>,
-) -> (HostChannel, HostRecord) {
+) -> (HostChannel, HostRecord, Vec<String>) {
     let channel = HostChannel::new();
     let record = HostRecord::default();
     let options = options.unwrap_or_default();
@@ -549,12 +552,14 @@ fn host_setup(
         channel.set_params(params.0);
     }
     let handlers = options.handlers.unwrap_or_default().0;
+    let mut names = Vec::with_capacity(handlers.len());
     if handlers.is_empty() {
-        return (channel, record);
+        return (channel, record, names);
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut functions = Vec::new();
     for (name, handler) in handlers {
+        names.push(name.clone());
         let record = record.clone();
         let remember = move |call: &HostCall| {
             record.lock().unwrap_or_else(|e| e.into_inner()).push((
@@ -587,7 +592,7 @@ fn host_setup(
         server.host_handlers = functions;
         server.host_calls = RefCell::new(rx);
     }
-    (channel, record)
+    (channel, record, names)
 }
 
 /// The manual clock `open` gives the app (`clock: {}`).
@@ -1095,8 +1100,11 @@ pub(crate) struct Launch {
     /// The embedding app's channel with the app: the test's launch
     /// parameters and handlers.
     pub(crate) host: HostChannel,
-    /// Whether `open`'s `host` has handlers (a headless run's only).
-    pub(crate) host_handlers: bool,
+    /// The names `open`'s `host.handlers` answer: the app the test opens is
+    /// granted those `capabilities.host` names, as an embedding app grants
+    /// the functions it handles (the page does not declare them). Empty:
+    /// `open`'s `host` has no handlers (a headless run's only).
+    pub(crate) host_names: Vec<String>,
 }
 
 /// The network an app opens with, made where it starts (it is `Send`).

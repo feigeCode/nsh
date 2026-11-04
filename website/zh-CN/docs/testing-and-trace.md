@@ -169,6 +169,8 @@ describe("the cart", () => {
 
 嵌入在原生应用中的应用通过 [`host`](../modules/nsh.md#host) 与宿主应用通信。在测试里由测试扮演宿主应用：`host.params` 是应用启动时读取的启动参数，`host.handlers` 按名称回答应用的 `host.call`、接收它的 `host.post`。处理函数可以是一个值，用它回答每次调用；也可以是一个函数，接收调用的数据并返回回答（或回答的 promise）。函数抛出的错误会让调用失败，与宿主应用出错时一样。`handlers` 没有列出的名称的调用会失败，与不处理任何调用的宿主应用一样。
 
+`handlers` 列出的名称就是应用的 [`capabilities.host`](../modules/nsh.md#能力)：测试扮演的是宿主应用，处理哪些函数就拥有哪些函数，所以页面不必声明它们（ABI v2 的宿主应用在安装时授予自己的函数）。页面自己的声明（如果有）仍然有效：两者取并集。
+
 ```tsx
 const app = await open("./App.tsx", {
   host: {

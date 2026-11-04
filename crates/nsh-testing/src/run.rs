@@ -21,6 +21,7 @@ use std::{
 use crossbeam_channel::{Receiver, Sender};
 use nsh_core::{
     ApproxTextEngine, MountBatch,
+    access::Capabilities,
     element::{Callback, Registry, Root},
     geometry::{Points, Size},
     platform::{Idiom, Locale, Os},
@@ -457,6 +458,34 @@ fn current() -> MutexGuard<'static, Option<Arc<Session>>> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Grants the app the test opens the host functions `names` answer.
+///
+/// A test plays the embedding app, which owns the functions it handles: the
+/// app's `nsh.json` no longer declares them (ABI v2 hosts grant them when
+/// they install), so a test's `host.handlers` are `capabilities.host` names
+/// implicitly. Names the page declares stay granted too: the two are a
+/// union, and a handler the test does not list still fails to be called.
+///
+/// A bundle that declares no capabilities keeps the legacy grant
+/// ([`Capabilities::all`], every capability except host) and gains `names`,
+/// as if the page had declared nothing but host.
+fn grant_host_handlers(bundle: &mut Bundle, names: &[String]) {
+    if names.is_empty() {
+        return;
+    }
+    let mut declared = bundle
+        .policy
+        .declared
+        .take()
+        .unwrap_or_else(Capabilities::all);
+    for name in names {
+        if !declared.host.contains(name) {
+            declared.host.push(name.clone());
+        }
+    }
+    bundle.policy.declared = Some(declared);
+}
+
 impl Session {
     /// The test file being run.
     pub(crate) fn current() -> Result<Arc<Session>, String> {
@@ -473,8 +502,13 @@ impl Session {
             return self.open_on_host(entry, &path, launch, start);
         }
         let app = match self.build(&path)? {
-            Built::Js(bundle, Some(map)) => nsh_engine::App::Js(bundle.with_source_map(map)),
-            Built::Js(bundle, None) => nsh_engine::App::Js(*bundle),
+            Built::Js(mut bundle, map) => {
+                grant_host_handlers(&mut bundle, &launch.host_names);
+                match map {
+                    Some(map) => nsh_engine::App::Js(bundle.with_source_map(map)),
+                    None => nsh_engine::App::Js(*bundle),
+                }
+            }
             Built::Rust(root) => nsh_engine::App::Rust(root),
         };
         let clock = launch
@@ -757,7 +791,7 @@ fn check_launch(entry: &str, launch: &Launch, target: Option<&HostTarget>) -> Re
         |option: &str, why: &str| Err(crate::failure::unsupported(entry, option, name, why));
     // The host's dev host plays no handlers of the test's: the launch
     // parameters reach its engine, the handlers run headless.
-    if launch.host_handlers {
+    if !launch.host_names.is_empty() {
         return unsupported(
             "host.handlers",
             "the test plays the embedding app's handlers in headless runs: run the test without --target",
@@ -1124,7 +1158,7 @@ mod tests {
             platform: None,
             clock: None,
             host: nsh_engine::HostChannel::new(),
-            host_handlers: false,
+            host_names: Vec::new(),
         }
     }
 
@@ -1134,6 +1168,51 @@ mod tests {
             platform,
             sized,
         }
+    }
+
+    #[test]
+    fn a_tests_handlers_join_the_host_capabilities_the_page_declares() {
+        let names = ["greet".to_owned(), "setStatus".to_owned()];
+        let mut bundle = nsh_engine::Bundle::source(String::new())
+            .with_capabilities_json(Some(
+                r#"{"network":{"hosts":["api.test"]},"host":["declared"]}"#,
+            ))
+            .expect("capabilities");
+        let before = bundle.policy.declared.clone().expect("declared");
+        grant_host_handlers(&mut bundle, &names);
+        let after = bundle.policy.declared.expect("declared");
+        // The union, once per name: a handler the page declared stays.
+        assert_eq!(after.host, ["declared", "greet", "setStatus"]);
+        // The rest of the declaration is what the page wrote.
+        assert_eq!(after.network, before.network);
+        assert_eq!(after.webview, before.webview);
+        assert_eq!(after.clipboard, before.clipboard);
+    }
+
+    #[test]
+    fn a_page_without_capabilities_gains_the_handlers_and_the_legacy_grant() {
+        let mut bundle = nsh_engine::Bundle::source(String::new());
+        assert!(bundle.policy.declared.is_none());
+        grant_host_handlers(&mut bundle, &["greet".to_owned()]);
+        let declared = bundle.policy.declared.expect("declared");
+        let all = Capabilities::all();
+        assert_eq!(declared.host, ["greet"]);
+        // No declaration granted everything but the host: it still does.
+        assert_eq!(declared.network, all.network);
+        assert_eq!(declared.webview, all.webview);
+        assert_eq!(declared.process, all.process);
+        assert_eq!(declared.fs, all.fs);
+        assert_eq!(declared.status_bar, all.status_bar);
+        assert_eq!(declared.clipboard, all.clipboard);
+        assert_eq!(declared.picker, all.picker);
+        assert_eq!(declared.open_url, all.open_url);
+    }
+
+    #[test]
+    fn no_handlers_leave_the_capabilities_alone() {
+        let mut bundle = nsh_engine::Bundle::source(String::new());
+        grant_host_handlers(&mut bundle, &[]);
+        assert!(bundle.policy.declared.is_none());
     }
 
     #[test]
@@ -1186,7 +1265,7 @@ mod tests {
 
         // The embedding app's handlers run headless, whatever the target.
         let mut handlers = launch();
-        handlers.host_handlers = true;
+        handlers.host_names = vec!["echo".to_owned()];
         let error = check_launch("./App.tsx", &handlers, None).unwrap_err();
         assert_eq!(code_of(&error), Some(UNSUPPORTED), "{error}");
     }
