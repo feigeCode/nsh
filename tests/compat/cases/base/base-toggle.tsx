@@ -7,8 +7,11 @@
 // focus (only the first pressed toggle is `focusable`), and the app's look
 // of a toggle (`pressedStyle`) and of the marker it puts inside, whose
 // `group-aria-pressed:` and `group-disabled:` classes follow the toggle.
-// The marker's widths move the label after it, which is how its script
-// sees them.
+// How far outside a toggle presses count (`hitSlop`, a number for every
+// side or some sides) follows a signal. A press going down and ending
+// (`onPressDown` / `onPressUp`, as the platform reports them) is the app's
+// own press feedback. The marker's widths move the label after it, which
+// is how its script sees them.
 import { Text, View, signal } from "nsh";
 import { Toggle, ToggleGroup } from "nsh/base";
 
@@ -21,6 +24,9 @@ function App() {
   const favorite = signal(false);
   const disabled = signal(true);
   const locked = signal(false);
+  const wide = signal(false);
+  const downs = signal(0);
+  const ups = signal(0);
   const mark = (value: string, label: string, lockable = false) => (
     <Toggle
       testID={value}
@@ -46,6 +52,8 @@ function App() {
         accessibilityLabel="Favorite"
         class="group flex-row items-center"
         onChange={({ pressed }) => favorite.set(pressed)}
+        onPressDown={() => downs.set(downs() + 1)}
+        onPressUp={() => ups.set(ups() + 1)}
       >
         <View class={marker} />
       </Toggle>
@@ -59,6 +67,10 @@ function App() {
       <Text>{`Favorite: ${favorite()}`}</Text>
       <View testID="enable" onPress={() => disabled.set(!disabled())} style={{ height: 20 }} />
       <View testID="lock" onPress={() => locked.set(!locked())} style={{ height: 20 }} />
+      <Toggle testID="pin" pressed={wide()} accessibilityLabel="Pin" hitSlop={wide() ? { top: 4, left: 2 } : 12} onChange={({ pressed }) => wide.set(pressed)}>
+        <Text>Pin</Text>
+      </Toggle>
+      <Text>{`Downs: ${downs()}, ups: ${ups()}`}</Text>
     </View>
   );
 }

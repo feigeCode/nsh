@@ -440,6 +440,24 @@ pub(crate) const NODE_METHODS: &[(&str, c_int, &str, &str)] = &[
         decl!("`WebView`: sends `data` to the page (a `message` event on `window`)."),
     ),
     (
+        "sendInput",
+        1,
+        decl!(
+            "(input: { type: \"click\"; x: number; y: number } | { type: \"text\"; text: string } | { type: \"key\"; key: \"Enter\" | \"Tab\" | \"Escape\" | \"Backspace\" }): void"
+        ),
+        decl!(
+            "`WebView`: gives the page input as the user's own, so its events are trusted (`isTrusted`), which `injectJavaScript` cannot do: a click at a point of the viewport in CSS pixels (as `getBoundingClientRect()` reports), text typed into what has the page's focus, or a key. A click's events can still be on their way when the next call starts: let it settle (a frame or so) before typing after it. It takes the keyboard focus for the web view. Needs `\"webview\": { \"input\": true }` in `nsh.json`'s capabilities, also when the app declares none. macOS only for now; elsewhere it does nothing (`WebView.inputAvailable()` tells)."
+        ),
+    ),
+    (
+        "load",
+        1,
+        decl!("(options: { src: string; headers?: Record<string, string> }): void"),
+        decl!(
+            "`WebView`: loads `src`, sending `headers` with the page's own request only, not with its images, scripts or other subresources, its later navigations or reloads; e.g. `Authorization` for a signed-in page, without putting the token in the URL. The page then shows as with `src` (a later change of the `src` prop loads that instead). Its host must be one `webview.hosts` allows, else nothing loads. A header whose name is not an HTTP token or whose value holds a line break throws. Header values are not logged. macOS, iOS, Android, Windows, Linux and the GPUI backend send them; the browser backend has no way to and does nothing."
+        ),
+    ),
+    (
         "seek",
         1,
         decl!("(seconds: number): void"),
@@ -672,6 +690,11 @@ pub(crate) fn shared(cx: *mut JsContext) -> Rc<Shared> {
 pub(crate) fn merge_values(cx: *mut JsContext, values: &mut [JsValue]) -> JsValue {
     // SAFETY: borrowed arguments, as `merge` takes them.
     unsafe { merge(cx, UNDEFINED, values.len() as c_int, values.as_mut_ptr()) }
+}
+
+/// The surface's root node (borrowed).
+pub(crate) fn root_value(cx: *mut JsContext) -> JsValue {
+    dom(cx).root.get()
 }
 
 /// Queues `op` (for the components' glue).
@@ -1067,7 +1090,8 @@ fn content_of(cx: *mut JsContext, parent: JsValue, child: JsValue) -> JsValue {
 /// `contentStyle` / `contentClass` (React Native's
 /// content container: `flexGrow: 1` with `justifyContent: "center"`
 /// centers what is shorter than the viewport and still scrolls what is
-/// longer).
+/// longer). The browser runtime's renderer has its own
+/// (`nsh-platform-web`'s `browser/dom.rs`): a change here goes there too.
 fn scroll_content(cx: *mut JsContext, node: JsValue) -> Result<JsValue, JsValue> {
     let p = node_ptr(cx, node);
     // SAFETY: live node data, read briefly.
@@ -1234,7 +1258,7 @@ fn set_prop(
         }
         // SAFETY: live node data.
         "component" | "componentSlot" => unsafe { (*p).places = true },
-        "ios" | "android" | "desktop" | "web" => {
+        "ios" | "android" | "macos" | "desktop" | "web" => {
             return platform_props(cx, node, name, value, prev);
         }
         "contentStyle" | "contentClass" if unsafe { (*p).tag } == Some(Tag::Scroll) => {
@@ -1246,40 +1270,28 @@ fn set_prop(
             };
             return set_prop(cx, content, name, value, prev);
         }
-        "activeStyle" | "hoverStyle" | "focusStyle" | "disabledStyle" | "selectedStyle"
-        | "checkedStyle" | "indeterminateStyle" | "expandedStyle" | "pressedStyle"
-        | "focusWithinStyle" | "headerStyle" => {
-            let patch = part_style(cx, name, value)?;
-            let prop = match name {
-                "activeStyle" => nsh_core::Prop::ActiveStyle(patch),
-                "hoverStyle" => nsh_core::Prop::HoverStyle(patch),
-                "focusStyle" => nsh_core::Prop::FocusStyle(patch),
-                "disabledStyle" => nsh_core::Prop::DisabledStyle(patch),
-                "selectedStyle" => nsh_core::Prop::SelectedStyle(patch),
-                "checkedStyle" => nsh_core::Prop::CheckedStyle(patch),
-                "indeterminateStyle" => nsh_core::Prop::IndeterminateStyle(patch),
-                "expandedStyle" => nsh_core::Prop::ExpandedStyle(patch),
-                "pressedStyle" => nsh_core::Prop::PressedStyle(patch),
-                "focusWithinStyle" => nsh_core::Prop::FocusWithinStyle(patch),
-                _ => nsh_core::Prop::HeaderStyle(patch),
-            };
-            return dom(cx).push(cx, Op::SetProp { id, prop });
-        }
-        "headerClass" | "contentClass" => {
-            // SAFETY: an inline tag check.
-            let names: Box<str> = if unsafe { qjs::JS_IsString(value) } {
-                string_arg(cx, value).unwrap_or_default().into()
-            } else {
-                Box::default()
-            };
-            let prop = match name {
-                "headerClass" => nsh_core::Prop::HeaderClass(names),
-                _ => nsh_core::Prop::ListContentClass(names),
-            };
-            return dom(cx).push(cx, Op::SetProp { id, prop });
-        }
         "tooltip" if followed(cx, name, value) => return bind_prop_with(cx, node, name, value),
         _ => {}
+    }
+    if let Some(prop) = nsh_core::js::host::style_patch_prop(name) {
+        let prop = prop(part_style(cx, name, value)?);
+        return dom(cx).push(cx, Op::SetProp { id, prop });
+    }
+    // SAFETY: live node data.
+    if let Some(prop) = nsh_core::js::host::part_class_prop(name, unsafe { (*p).tag }) {
+        // SAFETY: an inline tag check.
+        let names: Box<str> = if unsafe { qjs::JS_IsString(value) } {
+            string_arg(cx, value).unwrap_or_default().into()
+        } else {
+            Box::default()
+        };
+        return dom(cx).push(
+            cx,
+            Op::SetProp {
+                id,
+                prop: prop(names),
+            },
+        );
     }
     if let Some(prop) = crate::touch::touch_prop(name) {
         return set_touch(cx, p, prop, value);
@@ -1491,9 +1503,10 @@ pub(crate) fn is_ancestor_of(cx: *mut JsContext, node: NodeId, of: NodeId) -> bo
     is_ancestor(cx, node, of)
 }
 
-/// `ios={{…}}` / `android={{…}}` / `web={{…}}` / `desktop={{…}}`: the
-/// props of this platform only, each set (or cleared) on its own. Desktop
-/// props apply on the desktop OSes and in desktop-class browsers.
+/// `ios={{…}}` / `android={{…}}` / `macos={{…}}` / `web={{…}}` /
+/// `desktop={{…}}`: the props of this platform only, each set (or cleared)
+/// on its own. Desktop props apply on the desktop OSes and in
+/// desktop-class browsers.
 fn platform_props(
     cx: *mut JsContext,
     node: JsValue,
@@ -3097,10 +3110,10 @@ unsafe extern "C" fn setup(
     {
         crate::env::take_theme(cx, &json);
     }
-    // Checked by the bundler; a hand-made bundle's wrong value is ignored.
+    // What this runtime cannot read (a newer NSH's) is left out.
     let status_bar = string_arg(cx, arg(argc, argv, 3))
         .and_then(|json| serde_json::from_str(&json).ok())
-        .and_then(|v| nsh_core::StatusBarSetting::from_json(&v).ok());
+        .map(|v| nsh_core::StatusBarSetting::from_json(&v));
     if let Some(setting) = status_bar
         && let Err(e) = push_op(
             cx,
@@ -3537,6 +3550,11 @@ pub(crate) const RT_EXPORTS: &[crate::modules::Item] = &[
     ("merge", Export::Function(merge, 2), Ts::Internal),
     ("list", Export::Function(crate::list::list, 1), Ts::Internal),
     ("setup", Export::Function(setup, 4), Ts::Internal),
+    (
+        "i18n",
+        Export::Function(crate::i18n::setup, 1),
+        Ts::Internal,
+    ),
     ("font", Export::Function(font, 2), Ts::Internal),
     ("metaUrl", Export::Function(meta_url, 1), Ts::Internal),
     ("ref", Export::Function(ref_, 3), Ts::Internal),
@@ -3683,6 +3701,33 @@ mod tests {
             [
                 r#"["effect 2 1","cleanup","effect 4 2","cleanup","effect 6 3","cleanup","effect 8 4","function","function",true,false]"#
             ]
+        );
+    }
+
+    #[test]
+    fn a_signals_methods_passed_on_their_own_write_it() {
+        let host = Host::new().unwrap();
+        host.eval_source(&format!(
+            r#"{REPORT}
+            import {{ signal }} from "nsh";
+            const n = signal(1);
+            const other = signal(0);
+            const {{ set, update }} = n;
+            [5].forEach(n.set);
+            const first = n();
+            update((x) => x + 1);
+            const second = n();
+            set.call(other, 9);
+            const proto = Object.getPrototypeOf(n);
+            let thrown = "";
+            try {{ Reflect.get(proto, "set", proto)(1); }} catch (e) {{ thrown = e.message; }}
+            report([first, second, n(), other(), n.set === n.set, n.set === other.set, n.set.name, thrown]);
+            "#
+        ))
+        .unwrap();
+        assert_eq!(
+            reported(&host),
+            [r#"[5,6,9,0,true,false,"set","not a live signal"]"#]
         );
     }
 

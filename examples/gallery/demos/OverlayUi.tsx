@@ -4,7 +4,7 @@
 import { createAnimatedValue, type JSX, platform, signal, split, Text, token, View } from "nsh";
 import { Input, type InputProps } from "nsh/base";
 import { LucideIcon, type LucideIconName } from "../icons";
-import { alpha, Caption, Card, colors, finish, focusRing, hovered, mono, radius, toneColor, toneTint, type Tone } from "../ui";
+import { alpha, Caption, Card, colors, finish, focusRing, hovered, mono, radius, terminal, toneColor, toneTint, type Tone } from "../ui";
 
 /** A pointer and a keyboard: desktop density. */
 export const pointer = platform.desktop;
@@ -18,7 +18,12 @@ export const tap = pointer ? "Click" : "Tap";
  * a plain view: the popup's trigger slot takes its presses and anchors to
  * it. While what it opens is open (`open`) it shows as selected; pressed
  * it sinks. With `onPress` it is a button of its own (a toolbar's), `tip`
- * its tooltip, `ink` its icon's and label's color.
+ * its tooltip, `ink` its icon's and label's color. `inline`: a word in a
+ * line of text (a mention): no padding of its own, so the text flows on
+ * past it, its hover fill reaching 4 points out with a pointer and a hit
+ * slop making a finger's target on a touch screen. A terminal draws no
+ * icons: an icon-only trigger shows `short` there (its accessibility label
+ * when unset), as text.
  */
 export function Trigger(props: {
   label?: string;
@@ -27,8 +32,10 @@ export function Trigger(props: {
   variant?: "secondary" | "ghost" | "primary";
   ink?: string;
   accessibilityLabel?: string;
+  short?: string;
   tip?: JSX.Element;
   disabled?: boolean;
+  inline?: boolean;
   onPress?: () => void;
 }) {
   const variant = () => props.variant ?? "secondary";
@@ -41,6 +48,7 @@ export function Trigger(props: {
           ? finish.pressed
           : finish.raised;
   const ink = () => props.ink ?? (variant() === "primary" ? colors.onAccent : variant() === "ghost" ? colors.muted : colors.text);
+  const label = () => props.label ?? (terminal ? (props.short ?? props.accessibilityLabel) : undefined);
   return (
     <View
       role={props.onPress ? "button" : undefined}
@@ -52,15 +60,18 @@ export function Trigger(props: {
       hoverStyle={props.open || props.disabled ? undefined : variant() === "primary" ? { opacity: 0.94 } : variant() === "ghost" ? hovered() : finish.hover}
       activeStyle={{ ...(variant() === "primary" ? { opacity: 0.88 } : variant() === "ghost" ? { backgroundColor: alpha(colors.text, 0.09) } : finish.pressed), transform: [{ scale: 0.97 }] }}
       focusStyle={focusRing()}
+      hitSlop={props.inline && !pointer && !terminal ? { left: 8, right: 8, top: 2, bottom: 2 } : undefined}
       style={{
         alignSelf: "flex-start",
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
         gap: pointer ? 6 : 8,
-        height: pointer ? 28 : 40,
-        minWidth: pointer ? 28 : 40,
-        paddingHorizontal: props.label ? (pointer ? 10 : 14) : 0,
+        // The terminal sizes it to its label.
+        height: terminal ? undefined : pointer ? 28 : 40,
+        minWidth: terminal ? undefined : pointer ? 28 : 40,
+        paddingHorizontal: props.inline ? (pointer && !terminal ? 4 : 0) : label() ? (pointer ? 10 : 14) : 0,
+        marginHorizontal: props.inline && pointer && !terminal ? -4 : 0,
         borderRadius: radius.control,
         borderCurve: "continuous",
         borderWidth: 1,
@@ -70,11 +81,11 @@ export function Trigger(props: {
         transitionDuration: 120,
       }}
     >
-      <If when={props.icon}>
+      <If when={!terminal && props.icon}>
         <LucideIcon name={props.icon!} size={pointer ? 14 : 17} tint={ink()} />
       </If>
-      <If when={props.label}>
-        <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: ink() }}>{props.label}</Text>
+      <If when={label()}>
+        <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: ink() }}>{label()}</Text>
       </If>
     </View>
   );

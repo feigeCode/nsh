@@ -12,7 +12,10 @@
 //! stays in the view's own layer, where it does not scroll.
 //!
 //! A shader view's frames are the contents of a sublayer
-//! ([`crate::shader`]) shaped here as an image view's image layer is.
+//! ([`crate::shader`]) shaped here as an image view's image layer is. An
+//! effect's or a running transition's frames show instead of the children:
+//! their container's mask hides them ([`hide_children`]), and clipping
+//! leaves it in place until they show again.
 //!
 //! Text and canvas views draw into a content sublayer
 //! ([`NshView::redraw`]: `drawLayer:inContext:`) at `BEHIND / 2`, above the
@@ -79,8 +82,8 @@ impl Kind {
     }
 }
 
-/// What shapes the layers: when it is unchanged, only colors may need
-/// setting again.
+/// What shapes the layers: when it and the blend mode are unchanged, only
+/// colors may need setting again.
 #[derive(Clone, PartialEq)]
 struct Shape {
     kind: Kind,
@@ -98,6 +101,12 @@ struct Shape {
     tint: Option<Color>,
     outline: nsh_core::Outline,
     effects: Option<std::sync::Arc<nsh_core::Effects>>,
+    /// The glass effect, its tint, and `macos={{ backdrop }}`: a change
+    /// redraws the backdrop (its material, style or tint), which no other
+    /// entry of the shape covers.
+    glass: nsh_core::GlassEffect,
+    glass_tint: Option<Color>,
+    backdrop: Option<nsh_core::MacOsBackdrop>,
     /// It shows a shader's frames ([`crate::shader`]).
     shader: bool,
 }
@@ -118,6 +127,9 @@ pub(crate) struct Decor {
     stroke: Option<Retained<CAShapeLayer>>,
     /// Clip shape for corners of different radii.
     mask: Option<Retained<CAShapeLayer>>,
+    /// A shader draws instead of the children: their container's mask
+    /// hides them ([`hide_children`]) in place of the clip shape.
+    hidden: bool,
     /// Borders whose sides differ: one even-odd ring per color.
     ring: Vec<Retained<CAShapeLayer>>,
     /// Image content (image views only): clips the picture to the view's
@@ -135,11 +147,15 @@ pub(crate) struct Decor {
     /// `tintColor`: the image layer shows this color through a mask of the
     /// image.
     tint: Option<(Color, Retained<CALayer>)>,
-    /// Layered shadows, gradients, outline, filters.
-    visual: crate::visual::Visual,
+    /// Layered shadows, gradients, outline, filters: boxed once a view has
+    /// one, since most views have none and a view's state is allocated
+    /// with its AppKit view.
+    visual: Option<Box<crate::visual::Visual>>,
     /// What was applied last.
     shape: Option<Box<Shape>>,
     colors: Option<Colors>,
+    /// The `mixBlendMode` set on the view's layer (`normal`: none).
+    blend: nsh_core::BlendMode,
 }
 
 impl Decor {
@@ -503,15 +519,14 @@ impl Decor {
             && crate::visual::drop_shadow(style).is_none();
         if let Some(cl) = clip_layer {
             cl.setMasksToBounds((clips && shared.is_some()) || (contained && container.is_none()));
-            if masks {
-                let m = shape_mask(&mut self.mask, local, radii);
-                // SAFETY: a mask layer owned by this decoration.
-                unsafe { cl.setMask(Some(&m)) };
+            let mask = if masks {
+                Some(shape_mask(&mut self.mask, local, radii))
             } else {
-                // SAFETY: clearing the mask.
-                unsafe { cl.setMask(None) };
                 self.mask = None;
-            }
+                None
+            };
+            let mask: Option<&CALayer> = mask.as_deref().map(|m| &**m);
+            set_clip_mask(cl, mask, self.hidden && container.is_some());
         }
 
         // Image content follows the view's shape.
@@ -537,7 +552,7 @@ impl Decor {
 
         // A shader's frames fill the view's shape, as a background does
         // (clipped even when the children are not).
-        if let Some(shader) = s.shader.as_ref() {
+        if let Some(shader) = s.shader.as_ref().filter(|s| s.fills()) {
             let l = shader.layer();
             l.setFrame(local);
             set_corners(l, r, continuous);
@@ -567,15 +582,17 @@ impl Decor {
             layer.setShadowPath(None);
         }
         let covered = covers_shadows && kind != Kind::Text;
-        self.visual.apply(
-            view,
-            layer,
-            style,
-            local,
-            radii,
-            kind == Kind::Text,
-            covered,
-        );
+        let text = kind == Kind::Text;
+        match &mut self.visual {
+            Some(visual) => visual.apply(view, layer, style, local, radii, text, covered),
+            None => {
+                let mut visual = crate::visual::Visual::default();
+                visual.apply(view, layer, style, local, radii, text, covered);
+                if !visual.is_empty() {
+                    self.visual = Some(Box::new(visual));
+                }
+            }
+        }
     }
 
     /// Draws borders with differing sides: the ring between the outer and
@@ -652,6 +669,42 @@ impl Decor {
     }
 }
 
+/// Clips the children with `mask` (corners of different radii) or none on
+/// `cl`, the layer that clips them, unless a shader `hides` them: their
+/// container keeps the mask that hides them ([`hide_children`]).
+fn set_clip_mask(cl: &CALayer, mask: Option<&CALayer>, hides: bool) {
+    if !hides {
+        // SAFETY: a mask layer owned by this decoration (or none).
+        unsafe { cl.setMask(mask) };
+    }
+}
+
+/// Hides `view`'s children while a shader draws instead of them
+/// ([`crate::shader`]): an empty mask on their container (AppKit hit-tests
+/// views, so they keep their clicks), which clipping leaves in place.
+/// Shown again, the view is shaped anew and its own clip comes back.
+pub(crate) fn hide_children(view: &NshView, hidden: bool) {
+    {
+        let mut state = view.state_mut();
+        if state.decor.hidden == hidden {
+            return;
+        }
+        state.decor.hidden = hidden;
+        if !hidden {
+            state.decor.shape = None;
+        }
+    }
+    if !hidden {
+        apply(view);
+        return;
+    }
+    if let Some(layer) = view.ensure_container().layer() {
+        let mask = CALayer::new();
+        // SAFETY: a fresh, empty mask layer owned by the container's layer.
+        quiet(|| unsafe { layer.setMask(Some(&mask)) });
+    }
+}
+
 /// Applies a view's decoration (background, corners, borders, shadows,
 /// clipping, effects) to its layers. Cheap when nothing changed.
 pub(crate) fn apply(view: &NshView) {
@@ -678,7 +731,13 @@ pub(crate) fn apply(view: &NshView) {
         borders: borders.colors,
     };
     let reshape = state.decor.shape.as_deref() != Some(&shape);
-    if !reshape && state.decor.colors == Some(colors) {
+    // `mixBlendMode` goes on the view's own layer, which composites its
+    // content layer, fill layers and the container clipped children live
+    // in as one with what is behind it: a view that gains or loses either
+    // keeps the filter where it is (the view's layer stays the outermost).
+    let blend = state.style.blend_mode;
+    let blend_changed = state.decor.blend != blend;
+    if !reshape && state.decor.colors == Some(colors) && !blend_changed {
         return;
     }
     quiet(|| {
@@ -691,9 +750,13 @@ pub(crate) fn apply(view: &NshView) {
         let d = &state.decor;
         d.set_background(&layer, colors.background);
         d.set_border_colors(&layer, container.as_deref(), &borders);
+        if blend_changed {
+            crate::visual::set_blend(&layer, blend);
+        }
     });
     state.decor.shape = Some(Box::new(shape));
     state.decor.colors = Some(colors);
+    state.decor.blend = blend;
     drop(guard);
     if kind == Kind::Image {
         // An image decodes at its view's size, once that is known.
@@ -718,7 +781,10 @@ fn shape_of(s: &ViewState, kind: Kind) -> Shape {
         tint: style.tint_color,
         outline: style.outline,
         effects: style.effects.clone(),
-        shader: s.shader.is_some(),
+        glass: style.glass_effect,
+        glass_tint: style.glass_tint_color,
+        backdrop: style.macos_backdrop,
+        shader: s.shader.as_ref().is_some_and(|s| s.fills()),
     }
 }
 
@@ -924,4 +990,27 @@ pub(crate) fn set_corners(layer: &CALayer, r: CGFloat, continuous: bool) {
             kCACornerCurveCircular
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipping_leaves_the_mask_that_hides_the_children() {
+        let container = CALayer::new();
+        let hiding = CALayer::new();
+        // SAFETY: an empty mask layer owned by the container.
+        unsafe { container.setMask(Some(&hiding)) };
+        let shape = CAShapeLayer::new();
+        let shape: &CALayer = &shape;
+        set_clip_mask(&container, Some(shape), true);
+        set_clip_mask(&container, None, true);
+        assert!(container.mask().is_some_and(|m| *m == *hiding));
+        // Shown again: the decoration's own clip.
+        set_clip_mask(&container, Some(shape), false);
+        assert!(container.mask().is_some_and(|m| *m == *shape));
+        set_clip_mask(&container, None, false);
+        assert!(container.mask().is_none());
+    }
 }

@@ -7,7 +7,7 @@ demo: ui-navigation
 
 # nsh/base
 
-`nsh/base` 是应用界面的基础组件层：不带样式、负责行为、状态、焦点和无障碍的组件，各平台通用。它位于基础元素（`nsh`、`nsh/mobile` 和 `nsh/desktop`）与应用自己的组件库之间，就像 GPUI Kit 中 `gpui-base` 位于 `gpui` 与带样式的组件库之间（见[模块](./index.md#three-layers)）。它提供控件（`Button`、`Link`、`Checkbox`、带 `ColorArea`、`ColorSlider`、`ColorField`、`ColorSwatch` 和 `ColorEyeDropper` 部件的 `ColorPicker`、`NumberInput`、放在 `RadioGroup` 里的 `Radio`、`Slider`、`Switch`、放在 `Tabs` 里的 `Tab`、放在 `ToggleGroup` 里的 `Toggle`、`Select`、`Combobox`、`Calendar`、`TimeField`、`DatePicker`）、命令面板（`Command`）、控件栏（带 `ToolbarGroup` 和 `ToolbarSeparator` 的 `Toolbar`）、应用自己外观的滚动条（`Scrollbar`）、可展开和收起的区域（`Collapsible`，以及带 `AccordionItem`、`AccordionHeader`、`AccordionTrigger` 和 `AccordionPanel` 部件的 `Accordion`）、进度条（`Progress`）、一次性验证码（`OtpInput`）、一组内容的分页（`Pagination`）、包含子项目的项目（`Tree`）、构建图表的部件（`nsh/base/plot` 中的 `Plot` 及 `Line`、`Area`、`Bar`、`Grid`、`Pie`、`Arc`）、由用户自行安排的工作区（放在 `ResizablePanelGroup` 里的 `ResizablePanel`，以及 `DockArea` 的分栏、标签组和停靠区）、Markdown 或 HTML 文档（`TextView`）、代码编辑器（`Editor`）、文本之间的改动（`DiffView`）、表格（`Table` 及其部件、`DataTable`）、文本输入框（`Input`）、显示在一切之上的弹出层（`Popover`，`Menu` 和 `ContextMenu` 及其 `MenuItem`、`MenuSeparator` 和 `Submenu`，`Tooltip`，`Sheet`）、toast（放在 `ToastStack` 中的 `Toast`，生命周期由 `ToastManager` 管理）、导航（由 `createNavStack` 创建的状态驱动、由多个 `NavPage` 组成的 `NavStack`，以及在所有内容之上展示内容的 `Dialog`）和系统警告对话框（`AlertDialog`）。页面和对话框还决定状态栏（`statusBar`）。
+`nsh/base` 是应用界面的基础组件层：不带样式、负责行为、状态、焦点和无障碍的组件，各平台通用。它位于基础元素（`nsh`、`nsh/mobile` 和 `nsh/desktop`）与应用自己的组件库之间，就像 GPUI Kit 中 `gpui-base` 位于 `gpui` 与带样式的组件库之间（见[模块](./index.md#three-layers)）。它提供控件（`Button`、`Link`、`Checkbox`、带 `ColorArea`、`ColorSlider`、`ColorField`、`ColorSwatch` 和 `ColorEyeDropper` 部件的 `ColorPicker`、`NumberInput`、放在 `RadioGroup` 里的 `Radio`、`Slider`、`Switch`、放在 `Tabs` 里的 `Tab`、放在 `ToggleGroup` 里的 `Toggle`、`Select`、`Combobox`、`Calendar`、`TimeField`、`DatePicker`）、命令面板（`Command`）、控件栏（带 `ToolbarGroup` 和 `ToolbarSeparator` 的 `Toolbar`）、应用自己外观的滚动条（`Scrollbar`）、可展开和收起的区域（`Collapsible`，以及带 `AccordionItem`、`AccordionHeader`、`AccordionTrigger` 和 `AccordionPanel` 部件的 `Accordion`）、进度条（`Progress`）、一次性验证码（`OtpInput`）、一组内容的分页（`Pagination`）、包含子项目的项目（`Tree`）、构建图表的部件（`nsh/base/plot` 中的 `Plot` 及 `Line`、`Area`、`Bar`、`Rule`、`Dot`、`Cell`、`Grid`、`Pie`、`Arc`）、由用户自行安排的工作区（放在 `ResizablePanelGroup` 里的 `ResizablePanel`，以及 `DockArea` 的分栏、标签组和停靠区）、Markdown 或 HTML 文档（`TextView`）、代码编辑器（`Editor`）、文本之间的改动（`DiffView`）、表格（`Table` 及其部件、`DataTable`）、文本输入框（`Input`）、显示在一切之上的弹出层（`Popover`，`Menu` 和 `ContextMenu` 及其 `MenuItem`、`MenuSeparator` 和 `Submenu`，`Tooltip`，`Sheet`）、toast（放在 `ToastStack` 中的 `Toast`，生命周期由 `ToastManager` 管理）、导航（由 `createNavStack` 创建的状态驱动、由多个 `NavPage` 组成的 `NavStack`，以及在所有内容之上展示内容的 `Dialog`）和系统警告对话框（`AlertDialog`）。页面和对话框还决定状态栏（`statusBar`）。
 
 基础组件还包括 `Avatar` 和 `AvatarGroup`（原生管理图片加载状态），以及用于逐页浏览内容的 `Carousel` 和其部件。
 
@@ -176,9 +176,9 @@ import type {
   StatusBar,
   RadioGroupProps,
   RadioProps,
+  SelectEntry,
   SelectGroup,
   SelectItem,
-  SelectItemState,
   SelectProps,
   ComboboxProps,
   CommandEntry,
@@ -236,7 +236,7 @@ import type {
 | [`Toggle`](../elements/toggle.md)、[`ToggleGroup`](../elements/toggle.md) | `toggle()`、`toggle_group()` | 一个处于开或关的按钮，以及由它们组成的工具栏；哪些按下由应用持有。 |
 | [`Toolbar`](../elements/toolbar.md)、[`ToolbarGroup`](../elements/toolbar.md)、[`ToolbarSeparator`](../elements/toolbar.md) | `toolbar()`、`toolbar_group()`、`toolbar_separator()` | 由按钮、开关按钮和链接组成的一栏：在键盘焦点里只占一站，方向键沿着它移动；相关项目的分组，以及它们之间的分隔线。 |
 | [`Select`](../elements/select.md) | `select()` | 从一组条目中选出一个值：桌面上是触发元素处的弹出层，手机上是 sheet；`value` 由应用持有，触发元素由应用绘制。 |
-| [`Combobox`](../elements/combobox.md) | `combobox()` | 从可搜索的一组条目中选出一个或多个（`multiple`）值，列表与选择框的相同；`value` 由应用持有，触发元素由应用绘制。 |
+| [`Combobox`](../elements/combobox.md) | `combobox()` | 从一组条目中选出一个或多个（`multiple`）值，在输入框中输入以筛选它们；`value` 由应用持有，字段的样式由应用设置。 |
 | [`Calendar`](../elements/calendar.md) | `calendar()` | 从按周排列的月份中选出一个日期或一段日期，带月份和年份视图与键盘操作；`value` 由应用持有，条目由应用绘制。 |
 | [`TimeField`](../elements/time-field.md) | `time_field()` | 逐段编辑一天中的时间（时、分、秒、上午/下午）；`value` 由应用持有。 |
 | [`DatePicker`](../elements/date-picker.md) | `date_picker()` | 从日历中选出一个日期、一段日期或一个日期和时间：桌面上是触发元素处的弹出层，手机上是 sheet；`value` 由应用持有，触发元素由应用绘制。 |
@@ -247,6 +247,7 @@ import type {
 | [`Command`](../elements/command.md) | `command()` | 命令面板：在应用的命令之上放一个搜索框，按标签和关键词原生过滤，放在虚拟化列表里；回车或按压选中（`onSelect`），放进 `Dialog` 就是 Cmd+K 面板。 |
 | [`Tree`](../elements/tree.md) | `tree()` | 包含子项目的项目，虚拟化渲染：可展开和收起，其中一个被选中，在键盘焦点里只占一站；`expanded` 和 `selected` 由应用持有，或由树自己保存。 |
 | [`Progress`](../elements/progress.md) | `progress()` | 进度条；`value`（0 到 100）和 `indeterminate` 由应用持有。 |
+| [`Terminal`](../elements/terminal.md) | `terminal()` | 显示程序输出并把按键发回；程序由应用负责（`write`、`onData`）。 |
 | [`NumberInput`](../elements/number-input.md) | `number_input()` | 在输入框里输入、或用按钮和按键步进的数字；`value` 由应用持有（或由输入框从 `defaultValue` 起自己保存）。 |
 | [`Scrollbar`](../elements/scrollbar.md) | `scrollbar()` | 为它指明的滚动视图或列表（`scroll`）提供应用自己外观的滚动条；滑块跟随内容，拖动和按压会滚动内容。 |
 | [`Slider`](../elements/slider.md) | `slider()` | 沿轨道选取一个值或两个值组成的范围；`value` 由应用持有（或由滑块从 `defaultValue` 起自己保存）。 |
@@ -328,15 +329,15 @@ import type {
 
 ### Select
 
-从以数据形式给出的一组条目（`items`：每个条目有值和标题，可以禁用或归入分组）中选出一个值，本身没有外观。应用的触发元素打开列表：在桌面平台上是触发元素处的弹出层，在手机和平板上是屏幕底部的 sheet。选择框负责键盘（Up、Down、Home、End、Page Up 和 Page Down、输入跳转、Return 和 Escape）、搜索（`searchable`）、高亮的行（`itemClass` 上的 `focus:`，`renderItem` 中的 `highlighted`），以及屏幕阅读器读到的组合框、列表框和选项角色。值由应用持有（`value`、`onChange`），或交给选择框自己保存（`defaultValue`）；应用为每个部件设置样式，或者自己绘制行。见 [Select](../elements/select.md)。
+从以数据形式给出的一组条目（`items`：每个条目有值和标题，可以禁用或归入分组）中选出一个值，本身没有外观。应用的触发元素打开列表：在桌面平台上是触发元素处的弹出层，在手机和平板上是屏幕底部的 sheet。选择框负责键盘（Up、Down、Home、End、Page Up 和 Page Down、输入跳转、Return 和 Escape）、搜索（`searchable`）、高亮的行（`itemClass` 上的 `focus:`；`renderItem` 只收到条目本身，从不收到状态），以及屏幕阅读器读到的组合框、列表框和选项角色。值由应用持有（`value`、`onChange`），或交给选择框自己保存（`defaultValue`）；应用为每个部件设置样式，或者自己绘制行。见 [Select](../elements/select.md)。
 
 ### Combobox
 
-从一组条目中选出值，列表与选择框的相同，本身没有外观：选一个，或者在 `multiple` 时选多个，这时一次选择会切换该条目，列表保持打开。值是一个数组，由应用持有（`value`、`onChange`），或交给组合框自己保存（`defaultValue`）；`onConfirm` 在列表关闭时告知它。搜索词可以由应用持有（`query`、`onQueryChange`），行下方可以显示底部区域，清除按钮会清空值。见 [Combobox](../elements/combobox.md)。
+从一组条目中选出值，列表与选择框的相同，在组合框的输入框中输入以筛选，本身没有外观：选一个，或者在 `multiple` 时选多个，这时一次选择会切换该条目，列表保持打开。值是一个数组，由应用持有（`value`、`onChange`），或交给组合框自己保存（`defaultValue`）；`onConfirm` 在列表关闭时告知它。搜索词可以由应用持有（`query`、`onQueryChange`），行下方可以显示底部区域，清除按钮会清空值。见 [Combobox](../elements/combobox.md)。
 
 ### Calendar
 
-从按周排列的月份中选出一个日期，或在 `range` 时选出一段日期，本身没有外观。并排显示一个或几个月（`numberOfMonths`）；头部翻月，并能打开月份视图或一页年份。值是一个 ISO 日期（`"2026-10-28"`）或 `[start, end]`，由应用持有（`value`、`onChange`），或交给日历自己保存（`defaultValue`）；`disabledMatcher` 让某些日期不能被选中，所有日期作为 Tab 的一站接受键盘操作。应用为各部件设置样式并绘制条目（`renderItem`）。见 [Calendar](../elements/calendar.md)。
+从按周排列的月份中选出一个日期，或在 `range` 时选出一段日期，本身没有外观。并排显示一个或几个月（`numberOfMonths`）；头部翻月，并能打开月份视图或一页年份。值是一个 ISO 日期（`"2026-10-28"`）或 `[start, end]`，由应用持有（`value`、`onChange`），或交给日历自己保存（`defaultValue`）；`disabledMatcher` 让某些日期不能被选中，所有日期作为 Tab 的一站接受键盘操作。应用为各部件设置样式并绘制条目（`renderItem` 只收到条目本身；状态是条目的类，范围中的日期是 `selected:`，并带 `data-range-start:`、`data-range-middle:`、`data-range-end:`）。见 [Calendar](../elements/calendar.md)。
 
 ### TimeField
 
@@ -392,7 +393,7 @@ import type {
 
 定长的数字一次性验证码，没有外观：一个原生文本框覆盖在格子之上接收键盘输入，因此打字、粘贴、数字键盘和系统的验证码自动填充
 都是平台自己的，屏幕阅读器也只看到一个文本框。只有数字能输入，最多 `length` 位；退格键删除最后一位。`value` 由应用持有（或给
-`defaultValue`），应用接收 `onChange` 和 `onComplete`，并为格子（接收下一位数字的格子带 `focus:`）、分组和光标设置样式。见
+`defaultValue`），应用接收 `onChange` 和 `onComplete`，并为格子（接收下一位数字的格子带 `focus:`，已填入数字的格子带 `data-filled:`）、分组和光标设置样式。见
 [OtpInput](../elements/otp-input.md)。
 
 ### Pagination
@@ -412,7 +413,7 @@ import type {
 
 ### Plot（`nsh/base/plot`）
 
-构建图表的部件，对应 `gpui-base` 的 `plot`，位于单独的模块中：`import { Plot, Line, Area, Bar, Grid, Pie, Arc, Sankey } from "nsh/base/plot"`。`Plot` 持有应用的数据行（`data`，对行的类型是泛型的，所以 `x` 和 `y` 是经过检查的键名或行的函数）、坐标轴的 `point`、`linear` 或 `band` 比例尺、指针下的行（`onHoverChange`）以及动效（`motion`：出现动效、悬停的淡入淡出和滑动）；它的图形根据数据行原生绘制，不为每个点运行 JS，使用 SVG 绘制属性（`stroke-*`、`fill-*`）着色，没有设置时使用 `currentColor`；`Area` 和 `Bar` 可以在形状内显示背景（渐变，`bg-linear-*`）。柱子立在 `band` 比例尺的条带里，并排或用 `stack` 堆叠，随 plot 出现时长出，指针下那一行以外的柱子会变淡，每根柱子末端可以有 `label` 部件。悬停的十字线、圆点（每个图形可用 `hoverDotClass` 设置自己的圆点）和提示框（`tooltipPlacement`，留在 plot 内）是由应用设置样式和内容的部件，原生移动；坐标轴标签是应用自己的元素。`Pie` 按每一行把一整圈分成扇区（设置 `innerRadius` 即为环形图），每个扇区用自己的类着色（`sliceClass`，行的函数）；`Arc` 绘制两个角度之间的一段扇形（仪表的轨道和数值）；在饼图上，plot 报告指针下的扇区，它会抬起（`hoverLift`），其他扇区变淡（`hoverDim`）。`Sankey` 绘制各行之间的流（`links`），按 d3-sankey 的方式布局，每个节点和流带用自己的类着色；节点可以带标签、可以悬停，流变化时平滑移动。见 [Plot](../elements/plot.md)。
+构建图表的部件，对应 `gpui-base` 的 `plot`，位于单独的模块中：`import { Plot, Line, Area, Bar, Grid, Pie, Arc, Sankey, Treemap } from "nsh/base/plot"`。`Plot` 持有应用的数据行（`data`，对行的类型是泛型的，所以 `x` 和 `y` 是经过检查的键名或行的函数）、坐标轴的 `point`、`linear` 或 `band` 比例尺、指针下的行（`onHoverChange`）以及动效（`motion`：出现动效、悬停的淡入淡出和滑动）；它的图形根据数据行原生绘制，不为每个点运行 JS，使用 SVG 绘制属性（`stroke-*`、`fill-*`）着色，没有设置时使用 `currentColor`；`Area` 和 `Bar` 可以在形状内显示背景（渐变，`bg-linear-*`）。柱子立在 `band` 比例尺的条带里，并排或用 `stack` 堆叠，随 plot 出现时长出，指针下那一行以外的柱子会变淡，每根柱子末端可以有 `label` 部件。悬停的十字线、圆点（每个图形可用 `hoverDotClass` 设置自己的圆点）和提示框（`tooltipPlacement`，留在 plot 内）是由应用设置样式和内容的部件，原生移动；坐标轴标签是应用自己的元素。`Pie` 按每一行把一整圈分成扇区（设置 `innerRadius` 即为环形图），每个扇区用自己的类着色（`sliceClass`，行的函数）；`Arc` 绘制两个角度之间的一段扇形（仪表的轨道和数值）；在饼图上，plot 报告指针下的扇区，它会抬起（`hoverLift`），其他扇区变淡（`hoverDim`）。`Sankey` 绘制各行之间的流（`links`），按 d3-sankey 的方式布局，每个节点和流带用自己的类着色；节点可以带标签、可以悬停，流变化时平滑移动。`Treemap` 把各行铺成嵌套矩形组成的层级（`id`、`parent`），每个叶子的面积就是它的 `value`，按类别或沿 plot 的 `colorScale` 色带着色，标签只在放得下时显示。见 [Plot](../elements/plot.md)。
 
 <a id="workspaces"></a>
 
@@ -601,6 +602,6 @@ nav_page()
 
 - [导航指南](../docs/navigation.md)。
 - [表单与键盘](../docs/forms-and-keyboard.md)。
-- [Avatar](../elements/avatar.md)、[Button](../elements/button.md)、[Carousel](../elements/carousel.md)、[Link](../elements/link.md)、[Checkbox](../elements/checkbox.md)、[Radio](../elements/radio.md)、[Switch](../elements/switch.md)、[Tabs](../elements/tabs.md)、[Toggle](../elements/toggle.md)、[Toolbar](../elements/toolbar.md)、[Select](../elements/select.md)、[Combobox](../elements/combobox.md)、[Calendar](../elements/calendar.md)、[TimeField](../elements/time-field.md)、[DatePicker](../elements/date-picker.md)、[Collapsible](../elements/collapsible.md)、[HoverCard](../elements/hover-card.md)、[Accordion](../elements/accordion.md)、[Progress](../elements/progress.md)、[Slider](../elements/slider.md)、[ColorPicker](../elements/color-picker.md)、[Scrollbar](../elements/scrollbar.md)、[NumberInput](../elements/number-input.md)、[OtpInput](../elements/otp-input.md)、[Pagination](../elements/pagination.md)、[Tree](../elements/tree.md)、[Plot](../elements/plot.md)、[NavStack](../elements/nav-stack.md)、[Dialog](../elements/dialog.md)、[AlertDialog](../elements/alert-dialog.md)、[TextView](../elements/text-view.md)、[Editor](../elements/editor.md)、[DiffView](../elements/diff-view.md)、[Table](../elements/table.md)、[DataTable](../elements/data-table.md)、[Text](../elements/text.md) 与 [Input](../elements/input.md)。
+- [Avatar](../elements/avatar.md)、[Button](../elements/button.md)、[Carousel](../elements/carousel.md)、[Link](../elements/link.md)、[Checkbox](../elements/checkbox.md)、[Radio](../elements/radio.md)、[Switch](../elements/switch.md)、[Tabs](../elements/tabs.md)、[Toggle](../elements/toggle.md)、[Toolbar](../elements/toolbar.md)、[Select](../elements/select.md)、[Combobox](../elements/combobox.md)、[Calendar](../elements/calendar.md)、[TimeField](../elements/time-field.md)、[DatePicker](../elements/date-picker.md)、[Collapsible](../elements/collapsible.md)、[HoverCard](../elements/hover-card.md)、[Accordion](../elements/accordion.md)、[Progress](../elements/progress.md)、[Terminal](../elements/terminal.md)、[Slider](../elements/slider.md)、[ColorPicker](../elements/color-picker.md)、[Scrollbar](../elements/scrollbar.md)、[NumberInput](../elements/number-input.md)、[OtpInput](../elements/otp-input.md)、[Pagination](../elements/pagination.md)、[Tree](../elements/tree.md)、[Plot](../elements/plot.md)、[NavStack](../elements/nav-stack.md)、[Dialog](../elements/dialog.md)、[AlertDialog](../elements/alert-dialog.md)、[TextView](../elements/text-view.md)、[Editor](../elements/editor.md)、[DiffView](../elements/diff-view.md)、[Table](../elements/table.md)、[DataTable](../elements/data-table.md)、[Text](../elements/text.md) 与 [Input](../elements/input.md)。
 - [设备与环境](../docs/device-and-environment.md)。
 - [`BackHandler`](./nsh-mobile.md#backhandler)：`BackHandler` 及其他 Android 专用 API。

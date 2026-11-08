@@ -5,8 +5,9 @@
 use super::host::{HostCx, HostInput, HostList, HostValue, field};
 use crate::{
     AccessibilityCurrent, AccessibilityProp, AccessibilityRole, AccessibilityState, AutoFill,
-    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, ModalProp,
-    Prop, ScrollProp, StatusBarSetting, StatusBarStyle, Viewability,
+    CellSlot, EdgeInsets, ImageScales, ImageSource, KeyboardTaps, ListContentStyle, MacOsBackdrop,
+    MacOsBackdropBlending, MacOsBackdropMaterial, MacOsBackdropState, ModalProp, Prop, ScrollProp,
+    StatusBarSetting, StatusBarStyle, Viewability,
     element::TsTypes,
     geometry::{Bounds, Percentage, Points, point, size},
     mount::ModalConfig,
@@ -105,6 +106,34 @@ impl HostValue for ListContentStyle {
     }
 }
 
+/// `macos={{ backdrop }}`: `{ material, blending, state }`, each field
+/// falling back to its default when left out or unknown.
+impl HostValue for MacOsBackdrop {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        if !input.is_object() {
+            return None;
+        }
+        Some(MacOsBackdrop {
+            material: field::<MacOsBackdropMaterial, _>(input, "material", cx).unwrap_or_default(),
+            blending: field::<MacOsBackdropBlending, _>(input, "blending", cx).unwrap_or_default(),
+            state: field::<MacOsBackdropState, _>(input, "state", cx).unwrap_or_default(),
+        })
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let material = <MacOsBackdropMaterial as HostValue>::ts_type(types);
+        let blending = <MacOsBackdropBlending as HostValue>::ts_type(types);
+        let state = <MacOsBackdropState as HostValue>::ts_type(types);
+        types.declare("MacOsBackdrop", |_| {
+            format!(
+                "/** The material a view draws with on macOS (`macos={{{{ backdrop }}}}`). */\n\
+                 export interface MacOsBackdrop {{\n  material?: {material};\n  \
+                 blending?: {blending};\n  state?: {state};\n}}"
+            )
+        })
+    }
+}
+
 /// A page's or dialog's `statusBar`: `{ foreground, hidden, animated }`
 /// (`StatusBar`, declared with the navigation in `nsh/base`); the fields
 /// left out keep what is below. An unknown `foreground` is left out.
@@ -188,6 +217,7 @@ impl HostValue for AccessibilityState {
             busy: flag("busy"),
             expanded: input.field("expanded").and_then(|v| v.as_bool()),
             pressed: tristate("pressed"),
+            has_popup: flag("hasPopup"),
             // `false` and unknown words are no current item, as ARIA has it.
             current: match current.as_ref().and_then(|c| c.as_bool()) {
                 Some(true) => Some(AccessibilityCurrent::True),
@@ -213,7 +243,9 @@ impl HostValue for AccessibilityState {
              /** A toggle button that is on or off (ARIA's `aria-pressed`). */\n  \
              pressed?: boolean | \"mixed\";\n  \
              /** The current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. */\n  \
-             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n}"
+             current?: boolean | \"page\" | \"step\" | \"location\" | \"date\" | \"time\";\n  \
+             /** Opens a popup, a menu or a list (ARIA's `aria-haspopup`); `expanded` says whether it is open. */\n  \
+             hasPopup?: boolean;\n}"
                 .into()
         })
     }
@@ -692,6 +724,39 @@ impl HostValue for crate::shader::ShaderUniforms {
                 .into()
         });
         format!("Record<string, {value}>")
+    }
+}
+
+/// A page's or a dialog's `transitionShader`: `{ source, uniforms?,
+/// duration? }`.
+impl HostValue for crate::shader::NavShaderSpec {
+    fn decode<I: HostInput>(input: &I, cx: &mut HostCx) -> Option<Self> {
+        if !input.is_object() {
+            return None;
+        }
+        let mut source = None;
+        let mut uniforms = crate::shader::ShaderUniforms::default();
+        let mut duration = None;
+        for (name, value) in input.entries() {
+            match name.as_str() {
+                "source" => source = value.as_string(),
+                "uniforms" => {
+                    uniforms = crate::shader::ShaderUniforms::decode(&value, cx).unwrap_or_default()
+                }
+                "duration" => duration = value.as_number().map(|d| d as f32),
+                _ => {}
+            }
+        }
+        Some(crate::shader::NavShaderSpec {
+            source: source?.as_str().into(),
+            uniforms,
+            duration,
+        })
+    }
+
+    fn ts_type(types: &mut TsTypes) -> String {
+        let uniforms = crate::shader::ShaderUniforms::ts_type(types);
+        format!("{{ source: string; uniforms?: {uniforms}; duration?: number }}")
     }
 }
 

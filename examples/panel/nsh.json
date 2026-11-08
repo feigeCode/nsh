@@ -1,7 +1,0 @@
-{
-  "name": "Panel",
-  "id": "com.longbridge.nsh.panel",
-  "appearance": "system",
-  "rust": "native",
-  "root": "PanelApp"
-}

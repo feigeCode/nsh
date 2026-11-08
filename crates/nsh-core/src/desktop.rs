@@ -1,18 +1,35 @@
-//! What only desktops have: the window's title and title bar, a host's
-//! panel windows ([`PanelOptions`]), the application menu, context menus and
-//! keyboard shortcuts (TS `nsh/desktop`). The platforms get them as
-//! [`DesktopCommand`]s on the root and report a chosen menu item as
-//! [`crate::EventKind::Menu`]; mobile platforms ignore them.
+//! What only desktops have: windows ([`window`]), the application menu,
+//! context menus and keyboard shortcuts (TS `nsh/desktop`). The platforms
+//! get them as [`DesktopCommand`]s on a window's root node (the main
+//! window's is the root) and report a chosen menu item as
+//! [`crate::EventKind::Menu`]; mobile platforms ignore them. The platforms
+//! report the main window's state in the environment ([`WindowState`]),
+//! the other windows' as [`WindowEvent`]s, and the displays with their own
+//! message ([`Display`]).
 
-use std::{error::Error, fmt, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
+    ImageSource,
     element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropEnum, PropError, TsTypes},
-    geometry::{Point, Points, Size},
+    geometry::{Point, Points},
     keymap::{self, Keystroke, Modifiers, When},
 };
 
-/// How the window's title bar looks (`Window.setTitleBar`).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod menu_icon;
+pub mod window;
+mod window_state;
+
+pub use window::{
+    Backdrop, CloseReason, MainWindowOptions, OpenWindow, ProgressState, ResizeEdge, SizeToContent,
+    TitleBarOptions, WindowAttributes, WindowBackend, WindowCloseCause, WindowControl, WindowEvent,
+    WindowKind, WindowMode, WindowOptions, WindowPointerEvents, WindowPosition, WindowProgress,
+    WindowRequest, Workspaces,
+};
+pub use window_state::{Display, DisplayId, WindowPlacement, WindowState};
+
+/// How a window's title bar looks ([`TitleBarOptions::style`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 pub enum TitleBarStyle {
     /// The system's title bar, above the app.
@@ -26,7 +43,7 @@ pub enum TitleBarStyle {
     Hidden,
 }
 
-/// When the window's menu bar shows (`Window.setMenuBar`), where the app's
+/// When the window's menu bar shows (`Menu.setMenuBar`), where the app's
 /// window draws one (the GPUI backend on Windows and Linux).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
 pub enum MenuBarMode {
@@ -40,7 +57,7 @@ pub enum MenuBarMode {
     AutoHide,
 }
 
-/// A window's frame (`Window.setFrame`): the part of it to move, in
+/// A window's frame (`WindowRef.setBounds`): the part of it to move, in
 /// points, in screen coordinates; a field left out keeps its value. The
 /// origin is the window's top left corner, measured from the top left of
 /// the primary screen (the one with the menu bar on macOS) with `y`
@@ -54,11 +71,13 @@ pub struct WindowFrame {
     /// keeps the top edge where it is (the window grows and shrinks at its
     /// bottom edge).
     pub y: Option<Points>,
-    /// Its outer width on macOS / Windows, GTK default width on Linux.
+    /// Its outer width on macOS / Windows, GTK default width on Linux;
+    /// in GPUI windows, the content's width (at least 1 point).
     pub width: Option<Points>,
-    /// Its outer height on macOS / Windows, GTK default height on Linux.
+    /// Its outer height on macOS / Windows, GTK default height on Linux;
+    /// in GPUI windows, the content's height (at least 1 point).
     pub height: Option<Points>,
-    /// Animates the change on macOS (false by default).
+    /// Animates the change on macOS (false by default; GPUI ignores it).
     pub animated: Option<bool>,
 }
 
@@ -66,7 +85,7 @@ pub struct WindowFrame {
 impl JsValue for WindowFrame {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("WindowFrame", |_| {
-            "/** A window's frame (`Window.setFrame`): the part of it to move, in points, in screen coordinates; a field left out keeps its value. */\n\
+            "/** A window's frame (`WindowRef.setBounds`): the part of it to move, in points, in screen coordinates; a field left out keeps its value. */\n\
              export interface WindowFrame {\n  \
              /** Its top left corner, from the primary screen's top left corner, `y` growing down. A height changed without a `y` keeps the top edge where it is: the window grows and shrinks at its bottom edge. */\n  \
              origin?: Partial<Point>;\n  \
@@ -138,22 +157,16 @@ impl JsValue for WindowFrame {
     }
 }
 
-/// How high a window floats (`Window.setLevel`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PropEnum)]
+/// How high a window floats (its `level`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PropEnum)]
 pub enum WindowLevel {
     /// The normal level.
     #[default]
     Normal,
     /// Above normal windows: a floating palette or a widget.
     Floating,
-    /// Just above the Dock or the taskbar: over it, other floating windows
-    /// and the full-screen windows of other apps.
-    ///
-    /// macOS puts it at the Dock's level (`CGWindowLevelForKey` of
-    /// `kCGDockWindowLevelKey`, 20) plus one; Windows has no level between
-    /// the two and uses `HWND_TOPMOST` as it does for
-    /// [`Floating`](Self::Floating); GTK 4 has no window levels in the same
-    /// way, so Linux ignores it.
+    /// Above the Dock and the taskbar (an overlay, a launcher).
+    #[prop(rename = "aboveDock")]
     AboveDock,
     /// macOS's desktop icon level; on Windows, moves to the bottom of
     /// the current z-order (later activation can raise the window).
@@ -161,197 +174,15 @@ pub enum WindowLevel {
     DesktopIcon,
 }
 
-/// The look of a panel window (`Panel::open`): the part of its options no
-/// toolkit sees, so every desktop backend takes the same values.
-///
-/// A panel is a second window of the host's own, running an app and engine
-/// of its own beside the main window's; its `AppOptions` and `AppSource`
-/// belong to the platform and come as `Panel::open`'s other arguments.
-///
-/// The struct is `#[non_exhaustive]`, so a new option is not a breaking
-/// change: set the fields with the builder methods
-/// ([`with_size`](Self::with_size), [`with_level`](Self::with_level), ...),
-/// starting from [`new`](Self::new) or [`Default`].
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct PanelOptions {
-    /// The window's title.
-    pub title: String,
-    /// The window's content size in points: a [`Size`] of [`Points`], as
-    /// the rest of the API sizes windows. `None` (the default) opens it at
-    /// 70% of the main screen's visible size (macOS centers it; Windows
-    /// takes 70% of the work area and lets Win32 place the window, and Linux
-    /// 70% of the first monitor's).
-    pub size: Option<Size<Points>>,
-    /// Where the window opens, in points: the screen coordinates of its
-    /// top-left corner, measured from the top-left corner of the primary
-    /// screen (down and to the right), as [`WindowFrame::x`] and
-    /// [`WindowFrame::y`] measure a window's. `None` (the default) centers
-    /// it on the main screen. GTK 4 has no window positioning, so Linux
-    /// ignores it.
-    pub position: Option<Point<Points>>,
-    /// How it floats: [`WindowLevel::Floating`] by default, so it stays
-    /// above the app's other windows, unlike a main window's
-    /// [`WindowLevel::Normal`]. [`WindowLevel::AboveDock`] puts it above the
-    /// Dock or the taskbar; Windows has no level between the two and uses
-    /// `HWND_TOPMOST` for both, and GTK 4 has no window levels in the same
-    /// way, so Linux ignores it.
-    pub level: WindowLevel,
-    /// No title bar and no frame (the default): the app draws every part of
-    /// the window.
-    pub borderless: bool,
-    /// The window's own background is transparent, so what is behind it
-    /// shows until the app paints over it (false by default). macOS makes
-    /// the window's background clear; Linux clears the GTK window's own
-    /// background — best effort, it needs a compositing window manager, and
-    /// the app's root still paints its own background; Windows has no such
-    /// window and ignores it (a Direct2D swap chain does not draw through a
-    /// layered window).
-    pub transparent: bool,
-    /// Hides the window while the app is not the active one (false by
-    /// default). A nonactivating panel never deactivates the app, so it
-    /// never fires for one: a panel that takes the keyboard without
-    /// activating the app wants [`hides_on_resign_key`](Self::hides_on_resign_key)
-    /// instead. Windows has no per-panel activation to follow and ignores
-    /// it; GTK 4's active window is the one with the keyboard, so Linux
-    /// hides on the same signal as
-    /// [`hides_on_resign_key`](Self::hides_on_resign_key).
-    pub hides_on_deactivate: bool,
-    /// Hides the window when it loses the keyboard's focus (false by
-    /// default): a click on another window, or a shortcut that moves the
-    /// focus elsewhere, takes the panel off screen.
-    ///
-    /// This is the signal a nonactivating panel has, which never deactivates
-    /// the app; a panel that does activate it can use either. macOS hides it
-    /// when it resigns key; Windows when it gets `WM_KILLFOCUS` from outside
-    /// the panel (a click on one of its own views keeps it); Linux when it
-    /// stops being GTK's active window.
-    pub hides_on_resign_key: bool,
-    /// Moves the window when its background is dragged (false by default).
-    /// macOS does it in the window server; Windows and Linux have no such
-    /// window and ignore it.
-    pub movable_by_background: bool,
-    /// Takes the keyboard without activating the app (false by default):
-    /// the panel stays above the app's other windows while the app the user
-    /// was in keeps working. macOS makes it a nonactivating panel; Windows
-    /// adds `WS_EX_NOACTIVATE` and focuses the panel on a click so it still
-    /// gets the keyboard; GTK 4 has no nonactivating window, so Linux
-    /// ignores it.
-    pub nonactivating: bool,
+/// Whether a window has the system's frame (its `frame`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PropEnum)]
+pub enum WindowFrameStyle {
+    /// The system's title bar and border.
+    #[default]
+    Default,
+    /// No title bar or border: the app draws everything.
+    None,
 }
-
-impl PanelOptions {
-    /// A borderless panel that floats, everything else as [`Default`].
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets [the title](Self::title).
-    pub fn with_title(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-
-    /// Sets [the content size](Self::size).
-    pub fn with_size(mut self, size: Size<Points>) -> Self {
-        self.size = Some(size);
-        self
-    }
-
-    /// Sets [where the window opens](Self::position).
-    pub fn with_position(mut self, position: Point<Points>) -> Self {
-        self.position = Some(position);
-        self
-    }
-
-    /// Sets [the level](Self::level).
-    pub fn with_level(mut self, level: WindowLevel) -> Self {
-        self.level = level;
-        self
-    }
-
-    /// Sets [whether the window has no frame](Self::borderless).
-    pub fn with_borderless(mut self, borderless: bool) -> Self {
-        self.borderless = borderless;
-        self
-    }
-
-    /// Sets [whether the window's background is transparent](Self::transparent).
-    pub fn with_transparent(mut self, transparent: bool) -> Self {
-        self.transparent = transparent;
-        self
-    }
-
-    /// Sets [whether the window hides while the app is inactive](Self::hides_on_deactivate).
-    pub fn with_hides_on_deactivate(mut self, hides: bool) -> Self {
-        self.hides_on_deactivate = hides;
-        self
-    }
-
-    /// Sets [whether the window hides when it loses the keyboard](Self::hides_on_resign_key).
-    pub fn with_hides_on_resign_key(mut self, hides: bool) -> Self {
-        self.hides_on_resign_key = hides;
-        self
-    }
-
-    /// Sets [whether a background drag moves the window](Self::movable_by_background).
-    pub fn with_movable_by_background(mut self, movable: bool) -> Self {
-        self.movable_by_background = movable;
-        self
-    }
-
-    /// Sets [whether the panel takes the keyboard without activating the app](Self::nonactivating).
-    pub fn with_nonactivating(mut self, nonactivating: bool) -> Self {
-        self.nonactivating = nonactivating;
-        self
-    }
-}
-
-impl Default for PanelOptions {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            size: None,
-            position: None,
-            level: WindowLevel::Floating,
-            borderless: true,
-            transparent: false,
-            hides_on_deactivate: false,
-            hides_on_resign_key: false,
-            movable_by_background: false,
-            nonactivating: false,
-        }
-    }
-}
-
-/// Why a panel window could not be opened (`Panel::open`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanelError {
-    /// The platform does not provide panel windows.
-    Unsupported(&'static str),
-    /// The options are not usable.
-    Invalid(&'static str),
-    /// The caller is not on the thread that runs the app: a panel is opened
-    /// from the setup hook of the platform's `run_app_with`, on the thread
-    /// that runs the app's message loop, and never moved off it.
-    WrongThread,
-}
-
-impl fmt::Display for PanelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unsupported(message) => {
-                write!(f, "panel windows are not supported here: {message}")
-            }
-            Self::Invalid(message) => write!(f, "invalid panel options: {message}"),
-            Self::WrongThread => {
-                f.write_str("a panel window must be opened on the thread that runs the app")
-            }
-        }
-    }
-}
-
-impl Error for PanelError {}
 
 /// A key of a [`Shortcut`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -849,6 +680,8 @@ pub struct MenuAction {
     /// When its shortcut chooses it while a text field has the keyboard
     /// focus (`when`); [`When::Always`] unless the app says otherwise.
     pub when: When,
+    /// What it shows beside its label, the app's own image ([`menu_icon`]).
+    pub icon: Option<ImageSource>,
 }
 
 impl MenuAction {
@@ -880,10 +713,27 @@ pub enum MenuItem {
         enabled: bool,
         /// Its items.
         items: Vec<MenuItem>,
+        /// What it shows beside its label ([`menu_icon`]), but for the
+        /// top-level menus of a menu bar, which show their titles alone.
+        icon: Option<ImageSource>,
     },
 }
 
 impl MenuItem {
+    /// Calls `f` with the icon of every item of `items`, submenus' too.
+    pub fn each_icon<'a>(items: &'a [MenuItem], f: &mut impl FnMut(&'a ImageSource)) {
+        for item in items {
+            match item {
+                MenuItem::Action(action) => action.icon.iter().for_each(&mut *f),
+                MenuItem::Submenu { items, icon, .. } => {
+                    icon.iter().for_each(&mut *f);
+                    MenuItem::each_icon(items, f);
+                }
+                MenuItem::Separator => {}
+            }
+        }
+    }
+
     /// Calls `f` with every action of `items`, submenus' too.
     pub fn each_action<'a>(items: &'a [MenuItem], f: &mut impl FnMut(&'a MenuAction)) {
         for item in items {
@@ -923,37 +773,30 @@ impl MenuItem {
     }
 }
 
-/// A desktop command (on the root).
+/// A desktop command, on a window's root node (the root for the main
+/// window and what is the app's: menus, the tray, global shortcuts).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesktopCommand {
-    /// The window's title.
-    SetTitle(String),
-    /// The title bar's style.
-    SetTitleBar {
-        /// Shown or hidden.
-        style: TitleBarStyle,
-        /// The height of the app's own title bar, in points: the window
-        /// controls are centered in it (Windows' caption buttons fill it);
-        /// `None` for the platform's height. On macOS this selects a native
-        /// toolbar style; the environment reports its actual height.
-        height: Option<Points>,
-    },
-    /// Minimizes the window.
-    Minimize,
-    /// Maximizes the window, or restores it when it is maximized.
-    ToggleMaximize,
-    /// Enters or leaves full screen.
-    ToggleFullScreen,
-    /// Moves and sizes the window (screen coordinates, points; a field
-    /// left out keeps its value).
-    SetFrame(WindowFrame),
-    /// The window's level (a floating window stays above normal ones).
-    SetLevel(WindowLevel),
-    /// Brings the window to the front of its level and focuses it (the app
-    /// activates).
-    OrderFront,
-    /// Closes the window (the app ends with its last window).
-    Close,
+    /// Shows the dialog root the command is addressed to in a window of its
+    /// own, until the node is removed. Sent before the node is inserted; a
+    /// platform without windows of its own ignores it (the runtime does not
+    /// send it there).
+    OpenWindow(Box<OpenWindow>),
+    /// The window's attributes that changed since the last commit (the
+    /// fields set; one command per window and commit).
+    SetAttributes(Box<WindowAttributes>),
+    /// A request to the window.
+    Request(WindowRequest),
+    /// Quits the app, as its `quit` menu role does: its windows close and
+    /// its run ends, also when closing the window would leave it running
+    /// (a window kept hidden, a tray icon). A view embedded in another app
+    /// leaves the app's lifecycle to that app.
+    Quit,
+    /// Quits the app as [`DesktopCommand::Quit`] does, then starts it again
+    /// with the same arguments once this process has exited
+    /// ([`crate::restart`]). A view embedded in another app leaves the
+    /// app's lifecycle to that app: nothing happens there.
+    Restart,
     /// The application menu (macOS's menu bar, the window's menu bar on
     /// Windows and Linux; not shown there while the title bar is hidden,
     /// its shortcuts still work); `None` restores the platform's default.
@@ -968,6 +811,64 @@ pub enum DesktopCommand {
         /// Where its top left corner goes.
         at: Option<Point<Points>>,
     },
+    /// Shows the app's icon in the system tray (the notification area on
+    /// Windows, the menu bar's status items on macOS, a StatusNotifierItem
+    /// on Linux), or changes it; `None` removes it. One per app: the last
+    /// window's wins.
+    SetTray(Option<Tray>),
+    /// Registers `shortcut` system-wide, whichever app has the keyboard: the
+    /// root's [`crate::EventKind::Menu`] reports `id` with `registered`
+    /// (whether the system took it), then `id` alone at each press.
+    RegisterGlobalShortcut {
+        /// Reported at each press (not 0).
+        id: u32,
+        /// The keystroke.
+        shortcut: Shortcut,
+    },
+    /// Gives back the global shortcut registered as `id`.
+    UnregisterGlobalShortcut(u32),
+}
+
+impl DesktopCommand {
+    /// A command about a window that the core keeps a record of or adjusts
+    /// (opening one, its attributes, a placement to fit).
+    /// It is addressed to one window: opening it, its attributes or a
+    /// request.
+    pub(crate) fn is_window_command(&self) -> bool {
+        matches!(
+            self,
+            DesktopCommand::OpenWindow(_)
+                | DesktopCommand::SetAttributes(_)
+                | DesktopCommand::Request(_)
+        )
+    }
+
+    pub(crate) fn is_windows(&self) -> bool {
+        matches!(
+            self,
+            DesktopCommand::OpenWindow(_)
+                | DesktopCommand::SetAttributes(_)
+                | DesktopCommand::Request(WindowRequest::SetPlacement(_))
+        )
+    }
+}
+
+/// The app's icon in the system tray ([`DesktopCommand::SetTray`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Tray {
+    /// The icon, the app's own image (an SVG is a template, drawn in the
+    /// panel's text color where the platform has such icons: macOS);
+    /// `None`: the app's icon where the platform has one.
+    pub icon: Option<ImageSource>,
+    /// Shown when the pointer rests on it; `""` for the app's name.
+    pub tooltip: String,
+    /// Its menu: opened by a secondary click (a primary one too when
+    /// [`Self::click`] is 0); empty for none.
+    pub menu: Arc<[MenuItem]>,
+    /// Reported as [`crate::EventKind::Menu`] when the icon is clicked
+    /// (primary button); 0: the click opens the menu.
+    pub click: u32,
 }
 
 pub(crate) fn title_bar_height(height: Option<Points>) -> Option<Points> {
@@ -994,65 +895,6 @@ mod tests {
         }
         assert_eq!(title_bar_height(Some(px(42.0))), Some(px(42.0)));
         assert_eq!(title_bar_height(Some(px(300.0))), Some(px(200.0)));
-    }
-
-    #[test]
-    fn panel_options_default_to_a_borderless_floating_panel() {
-        let options = PanelOptions::default();
-        assert_eq!(options.title, "");
-        assert_eq!(options.size, None);
-        assert_eq!(options.position, None);
-        assert_eq!(options.level, WindowLevel::Floating);
-        assert!(options.borderless);
-        assert!(!options.transparent);
-        assert!(!options.hides_on_deactivate);
-        assert!(!options.hides_on_resign_key);
-        assert!(!options.movable_by_background);
-        assert!(!options.nonactivating);
-    }
-
-    #[test]
-    fn panel_options_build() {
-        let options = PanelOptions::new()
-            .with_title("Quick Look")
-            .with_size(Size::new(Points(420.0), Points(300.0)))
-            .with_position(Point::new(Points(10.0), Points(20.0)))
-            .with_level(WindowLevel::AboveDock)
-            .with_borderless(false)
-            .with_transparent(true)
-            .with_hides_on_deactivate(true)
-            .with_hides_on_resign_key(true)
-            .with_movable_by_background(true)
-            .with_nonactivating(true);
-        assert_eq!(options.title, "Quick Look");
-        assert_eq!(options.size, Some(Size::new(Points(420.0), Points(300.0))));
-        assert_eq!(
-            options.position,
-            Some(Point::new(Points(10.0), Points(20.0)))
-        );
-        assert_eq!(options.level, WindowLevel::AboveDock);
-        assert!(!options.borderless);
-        assert!(options.transparent);
-        assert!(options.hides_on_deactivate);
-        assert!(options.hides_on_resign_key);
-        assert!(options.movable_by_background);
-        assert!(options.nonactivating);
-    }
-
-    #[test]
-    fn a_panel_reports_the_thread_it_needs() {
-        assert_eq!(
-            PanelError::WrongThread.to_string(),
-            "a panel window must be opened on the thread that runs the app"
-        );
-    }
-
-    #[test]
-    fn window_levels_name_themselves_in_camel_case() {
-        assert_eq!(WindowLevel::Normal.js_name(), "normal");
-        assert_eq!(WindowLevel::Floating.js_name(), "floating");
-        assert_eq!(WindowLevel::AboveDock.js_name(), "aboveDock");
-        assert_eq!(WindowLevel::DesktopIcon.js_name(), "desktopIcon");
     }
 
     #[test]
@@ -1148,6 +990,7 @@ mod tests {
                 checked: None,
                 role,
                 when: When::Always,
+                icon: None,
             })
         };
         let menu = vec![MenuItem::Submenu {
@@ -1158,6 +1001,7 @@ mod tests {
                 MenuItem::Separator,
                 action(0, copy, Some(MenuRole::Copy)),
             ],
+            icon: None,
         }];
         assert_eq!(MenuItem::find_shortcut(&menu, &new).map(|a| a.id), Some(1));
         // Text fields keep their own shortcuts.
@@ -1174,6 +1018,7 @@ mod tests {
             checked: None,
             role: None,
             when,
+            icon: None,
         };
         let fires = |shortcut, when| item(shortcut, when).fires_while_editing();
         assert!(fires("ctrl+z", When::Always));

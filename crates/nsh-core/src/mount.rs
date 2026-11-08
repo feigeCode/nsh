@@ -78,6 +78,15 @@ pub struct WebProps {
     pub javascript_enabled: bool,
     /// Swipes go back and forward (iOS).
     pub back_forward_gestures: bool,
+    /// Website data (cookies, storage, the cache) lives only as long as
+    /// the web view, apart from the app's other web views (Android: no
+    /// HTTP cache and no saved form data). Read when the platform makes the
+    /// web view: the core keeps it from changing afterwards.
+    pub incognito: bool,
+    /// The URL schemes the page loads from the app
+    /// ([`crate::web_resource`]). Read when the platform makes the web
+    /// view, as `incognito`.
+    pub url_schemes: Vec<crate::web_resource::WebUrlScheme>,
 }
 
 impl Default for WebProps {
@@ -92,6 +101,8 @@ impl Default for WebProps {
             scrollable: true,
             javascript_enabled: true,
             back_forward_gestures: false,
+            incognito: false,
+            url_schemes: Vec::new(),
         }
     }
 }
@@ -419,6 +430,13 @@ pub struct ScreenConfig {
     /// UIKit's own bar button in the trailing slot instead of `right`'s
     /// view (iOS); a press on it presses `right`'s first pressable view.
     pub right_system_item: Option<crate::HeaderSystemItem>,
+    /// UIKit's own bar button showing this SF Symbol in the trailing slot
+    /// instead of `right`'s view (iOS); `right_system_item` wins over it.
+    pub right_symbol: Option<Arc<str>>,
+    /// As `right_system_item`, in the leading slot, pressing `left`.
+    pub left_system_item: Option<crate::HeaderSystemItem>,
+    /// As `right_symbol`, in the leading slot, pressing `left`.
+    pub left_symbol: Option<Arc<str>>,
     /// Custom title view.
     pub title_view: Option<NodeId>,
     /// The app's header (`header`): on a platform without a native header
@@ -451,6 +469,9 @@ impl Default for ScreenConfig {
             left: None,
             right: None,
             right_system_item: None,
+            right_symbol: None,
+            left_system_item: None,
+            left_symbol: None,
             title_view: None,
             header_view: None,
             header_height: Points::ZERO,
@@ -486,6 +507,12 @@ pub struct ModalConfig {
     pub close_on_backdrop_press: bool,
     /// Swiping a sheet down closes it natively (`closeOnSwipe`).
     pub close_on_swipe: bool,
+    /// The window it shows in (desktops): [`crate::ROOT_ID`], the main
+    /// window, or the root of the app's window of its own that holds it
+    /// (a dialog opened from a `<Window>`'s content shows over that
+    /// window, not the main one). For a window's own root: the window
+    /// holding its node. The core works it out from where the node is.
+    pub window: NodeId,
 }
 
 impl Default for ModalConfig {
@@ -498,6 +525,7 @@ impl Default for ModalConfig {
             close_on_escape: true,
             close_on_backdrop_press: true,
             close_on_swipe: true,
+            window: crate::ROOT_ID,
         }
     }
 }
@@ -645,6 +673,12 @@ pub struct ImageOptions {
 /// created by the preceding items.
 #[derive(Debug, Clone)]
 pub enum MountItem {
+    /// Mounted nodes in depth-first logical tree order, independent of native
+    /// stacking (`Insert`); a list's cells, which it recycles, in the order
+    /// they are on screen. Opt-in through `Core::set_tree_order_tracking`;
+    /// emitted after structural changes and when a list's cells move, in the
+    /// same batch as the affected views.
+    TreeOrder(Vec<NodeId>),
     /// Create a native view. It starts detached and invisible.
     Create {
         /// Node id, used to address the view in later items.
@@ -659,6 +693,17 @@ pub enum MountItem {
     /// platform keep `states & tracked`), so the two never disagree about
     /// a state the platform stopped reporting.
     TrackStates {
+        /// View id.
+        id: NodeId,
+        /// The states.
+        states: u16,
+    },
+    /// The states the view shows as a part of a control (`tailwind::state`
+    /// bits: a list's highlighted option is focused while the focus stays
+    /// on its search field), for a platform that marks them itself. Opt-in
+    /// through `Core::set_projected_state_mounting`; the platform shows
+    /// them and never reports them back.
+    ProjectStates {
         /// View id.
         id: NodeId,
         /// The states.
@@ -751,7 +796,7 @@ pub enum MountItem {
         scrollbar_visible: bool,
         /// A built-in bar of the app's takes the indicator's place (the
         /// core's, over the viewport): the platform shows none on either
-        /// axis, also where a horizontal view keeps its own.
+        /// axis.
         replaced: bool,
         /// Native animation value fed with the main-axis offset.
         scroll_value: Option<crate::animation::NodeId>,
@@ -853,6 +898,21 @@ pub enum MountItem {
         id: NodeId,
         /// How long it runs.
         duration: std::time::Duration,
+    },
+    /// The shader a page or a dialog comes and goes through
+    /// (`transitionShader`; `None`: its `animation`): when it is pushed,
+    /// popped, presented or dismissed, the platform draws the change through
+    /// the layer for `duration`, the lower side's picture as `sample_from`
+    /// and the upper's as `sample_to`, whatever the page's `animation`; its
+    /// `animation` runs where it cannot and when the user asks for less
+    /// motion, and a change that starts while one runs ends that one first
+    /// (`docs/dev/shaders.md` "Pages and dialogs").
+    NavShader {
+        /// The page or dialog.
+        id: NodeId,
+        /// The layer (role [`crate::shader::ShaderRole::Transition`]) and
+        /// how long it runs.
+        shader: Option<NavShader>,
     },
     /// What a shader's pictures show changed, as far as the core knows: a
     /// view in an effect's or a transition's subtree was in the batch, or
@@ -1010,6 +1070,25 @@ impl MountItem {
             M::Insert { parent, .. } => Some(*parent),
             _ => None,
         }
+    }
+}
+
+/// A page's or a dialog's transition through a shader
+/// ([`MountItem::NavShader`]). It has no `Default`: a layer holds a
+/// compiled program, which has none; [`NavShader::new`] makes one.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct NavShader {
+    /// The program and its uniforms.
+    pub layer: Arc<crate::shader::ShaderLayer>,
+    /// How long it runs.
+    pub duration: std::time::Duration,
+}
+
+impl NavShader {
+    /// `layer` running for `duration`.
+    pub fn new(layer: Arc<crate::shader::ShaderLayer>, duration: std::time::Duration) -> Self {
+        Self { layer, duration }
     }
 }
 

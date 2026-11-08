@@ -71,10 +71,17 @@ pub struct NativeUse {
     /// It loads a module whose specifier is computed (`import(name)`),
     /// which may be any native module, whole.
     pub computed_import: bool,
-    /// It may make a shader view: it spells `shader` in a string or a
-    /// template, as the compiled `<Shader>` tags do (they pass it to
-    /// `nsh:rt`'s `element`, and the import of `Shader` is gone).
+    /// It may make a shader view: it spells the tag of one (`shader`,
+    /// `shadereffect`, `shadertransition`, `screeneffect`,
+    /// `screentransition`) in a string or a template, as the compiled
+    /// `<Shader>`, `<ShaderEffect>`, ... tags do (they pass it to `nsh:rt`'s
+    /// `element`, and the import is gone), or `transitionShader`, a page's
+    /// or a dialog's prop, as a key or a string.
     pub shader: bool,
+    /// It may give a view a scroll bar theme of its own: it spells
+    /// `scrollbar` as a key, a member or a string (`<ScrollView
+    /// scrollbar={theme}>`). `nsh/base`'s core part draws such bars.
+    pub scrollbar_theme: bool,
 }
 
 impl NativeUse {
@@ -90,12 +97,39 @@ impl NativeUse {
         finder.visit_program(&parsed.program);
     }
 
+    /// Adds what `other` uses: the use of code made of both.
+    pub fn merge(&mut self, other: &NativeUse) {
+        for (specifier, imported) in &other.imports {
+            match (self.import(specifier), imported) {
+                (Imported::All, _) => {}
+                (mine, Imported::All) => *mine = Imported::All,
+                (Imported::Names(mine), Imported::Names(names)) => {
+                    mine.extend(names.iter().cloned())
+                }
+            }
+        }
+        self.global_crypto |= other.global_crypto;
+        self.computed_import |= other.computed_import;
+        self.shader |= other.shader;
+        self.scrollbar_theme |= other.scrollbar_theme;
+    }
+
     fn import(&mut self, specifier: &str) -> &mut Imported {
         self.imports
             .entry(specifier.to_owned())
             .or_insert_with(|| Imported::Names(BTreeSet::new()))
     }
 }
+
+/// The host tags of the views a shader draws (`jsx::PRIMITIVES`): each
+/// needs the runtime's shader compiler.
+const SHADER_TAGS: &[&str] = &[
+    "shader",
+    "shadereffect",
+    "shadertransition",
+    "screeneffect",
+    "screentransition",
+];
 
 /// The global object's names: what is read from it by a name the code does
 /// not spell may be a global of `crypto`.
@@ -107,10 +141,13 @@ struct Finder<'u, F> {
 }
 
 impl<F> Finder<'_, F> {
-    /// A string in the code: the tag of a shader view, if it is `shader`.
+    /// A string in the code: the tag of a shader view, if it is one.
     fn quoted(&mut self, value: &str) {
-        if value == "shader" {
+        if SHADER_TAGS.contains(&value) || value == "transitionShader" {
             self.uses.shader = true;
+        }
+        if value == "scrollbar" {
+            self.uses.scrollbar_theme = true;
         }
     }
 
@@ -194,8 +231,15 @@ impl<'a, F: Fn(&str) -> bool> Visit<'a> for Finder<'_, F> {
 
     // Members (`globalThis.crypto`) and keys (`({ crypto: c } = globalThis)`,
     // `const { CryptoKey } = self`).
+    // A key `transitionShader` is a page's or a dialog's shader.
     fn visit_identifier_name(&mut self, it: &IdentifierName<'a>) {
         self.spelled(it.name.as_str());
+        if it.name == "transitionShader" {
+            self.uses.shader = true;
+        }
+        if it.name == "scrollbar" {
+            self.uses.scrollbar_theme = true;
+        }
     }
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
@@ -265,6 +309,24 @@ mod tests {
     }
 
     #[test]
+    fn merged_uses_are_those_of_both() {
+        let mut a = uses(r#"import { Button } from "nsh/base"; import d from "zlib";"#);
+        let b =
+            uses(r#"import { Tabs } from "nsh/base"; import * as n from "nsh"; import("x" + y);"#);
+        let mut whole = uses(
+            r#"import { Button } from "nsh/base"; import d from "zlib";
+            import { Tabs } from "nsh/base"; import * as n from "nsh"; import("x" + y);"#,
+        );
+        a.merge(&b);
+        assert_eq!(a, whole);
+        // Merging is idempotent and keeps `All`.
+        a.merge(&b);
+        assert_eq!(a, whole);
+        whole.merge(&uses(r#"import { View } from "nsh";"#));
+        assert_eq!(whole.imports.get("nsh"), Some(&Imported::All));
+    }
+
+    #[test]
     fn named_imports_count_by_the_names_the_module_exports() {
         let uses = uses(
             r#"import { Button, Tabs as T } from "nsh/base"; import { View } from "nsh";
@@ -314,7 +376,26 @@ mod tests {
     fn a_shader_tag_counts_as_a_shader() {
         assert!(uses("_$element(\"shader\");").shader);
         assert!(uses("u(`shader`);").shader);
+        for tag in [
+            "shadereffect",
+            "shadertransition",
+            "screeneffect",
+            "screentransition",
+        ] {
+            assert!(uses(&format!("_$element(\"{tag}\");")).shader, "{tag}");
+        }
+        assert!(uses("_$c(NavPage, { transitionShader: wipe });").shader);
+        assert!(uses("_$c(Dialog, { \"transitionShader\": wipe });").shader);
+        assert!(!uses("const options = { shader: wipe };").shader);
         assert!(!uses("const shader = view;").shader);
+    }
+
+    #[test]
+    fn a_scrollbar_key_counts_as_a_scrollbar_theme() {
+        assert!(uses("_$c(ScrollView, { scrollbar: theme });").scrollbar_theme);
+        assert!(uses("_$setProp(el, \"scrollbar\", theme);").scrollbar_theme);
+        assert!(uses("view.scrollbar = theme;").scrollbar_theme);
+        assert!(!uses("const bar = view;").scrollbar_theme);
     }
 
     #[test]

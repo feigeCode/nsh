@@ -34,9 +34,19 @@ pub(crate) enum Target {
     /// The GPUI development host, in a window on this machine (macOS,
     /// Windows or Linux): the app as GPUI apps that embed it show it.
     Gpui,
+    /// The development host in this terminal.
+    Tui,
 }
 
 impl Target {
+    /// Whether the dev server listens on every interface for this target,
+    /// or on loopback only. Phones open the web page at the LAN address
+    /// and a device's host may be on the network; a desktop window, the
+    /// terminal and Catalyst connect on this machine.
+    pub(crate) fn uses_network(self) -> bool {
+        matches!(self, Target::Ios | Target::Android | Target::Web)
+    }
+
     /// The default: this system’s native desktop host (AppKit on macOS,
     /// GTK on Linux, Win32 on Windows; the browser elsewhere).
     pub(crate) fn native() -> Target {
@@ -58,6 +68,7 @@ impl Target {
             Target::Macos => crate::runtime::Platform::MacOs,
             Target::Windows => crate::runtime::Platform::Windows,
             Target::Gpui => crate::runtime::Platform::Gpui,
+            Target::Tui => crate::runtime::Platform::Tui,
             Target::Ios | Target::Android | Target::Web => {
                 crate::runtime::Platform::IphoneSimulator
             }
@@ -66,15 +77,17 @@ impl Target {
 }
 
 /// How the development host runs the app and what it shows besides it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct HostFlags {
     /// The VM limits an embedding app would set (`--limits`); `None`: none,
     /// as an app on its own.
     pub(crate) limits: Option<HostLimits>,
     /// Log per-commit timings.
     pub(crate) trace: bool,
-    /// The performance monitor (the macOS host's).
+    /// The selected host's performance monitor.
     pub(crate) fps: bool,
+    /// Terminal Cell dimensions, overriding nsh.json.
+    pub(crate) points_per_cell: Option<String>,
 }
 
 /// The host window's own options: the desktop hosts take the size
@@ -142,22 +155,30 @@ impl HostWindow<'_> {
 /// loads bundles from the dev server and reloads on change.
 pub(crate) fn run(
     entry: &Path,
-    port: u16,
+    listen: crate::dev::Listen,
     release: bool,
     flags: HostFlags,
     target: Target,
     device: Option<&str>,
     window: HostWindow<'_>,
 ) -> anyhow::Result<()> {
-    let HostFlags { limits, trace, fps } = flags;
+    let HostFlags {
+        limits,
+        trace,
+        fps,
+        points_per_cell,
+    } = flags;
+    if points_per_cell.is_some() && target != Target::Tui {
+        bail!("--points-per-cell needs --target tui");
+    }
     if fps
         && !matches!(
             target,
-            Target::Macos | Target::Linux | Target::Ios | Target::Windows
+            Target::Macos | Target::Linux | Target::Ios | Target::Windows | Target::Tui
         )
     {
         bail!(
-            "--fps needs --target macos, linux, windows or ios (the other hosts have no performance monitor yet)"
+            "--fps needs --target macos, linux, windows, ios or tui (the other hosts have no performance monitor yet)"
         );
     }
     window.check(target, crate::rust_app::is_root(entry))?;
@@ -165,14 +186,28 @@ pub(crate) fn run(
         .parent()
         .context("entry has no directory")?
         .join(".nsh");
+    if target == Target::Tui {
+        return run_tui(
+            entry,
+            listen,
+            release,
+            HostFlags {
+                limits,
+                trace,
+                fps,
+                points_per_cell,
+            },
+            &work,
+        );
+    }
     if crate::rust_app::is_root(entry) {
-        return run_rust_app(entry, port, target, device, &work);
+        return run_rust_app(entry, listen, target, device, &work);
     }
     if target == Target::Android {
-        return run_android(entry, port, release, limits, &work, trace);
+        return run_android(entry, listen, release, limits, &work, trace);
     }
     if target == Target::Web {
-        return run_web(entry, port, release, limits);
+        return run_web(entry, listen, release, limits);
     }
     // The host a previous session left running would connect to this one
     // until it is replaced.
@@ -188,10 +223,11 @@ pub(crate) fn run(
         | Target::Macos
         | Target::Windows
         | Target::Web
-        | Target::Gpui => None,
+        | Target::Gpui
+        | Target::Tui => None,
     };
     // The host it starts connects by itself: no addresses to show.
-    let session = DevSession::start(entry, port, release, limits)?;
+    let session = DevSession::start(entry, listen, release, limits)?;
     let host = crate::runtime::file(target.platform(), false)?;
     let mut args = vec!["--dev-server".to_owned(), session.local_url()];
     if trace {
@@ -223,6 +259,10 @@ pub(crate) fn run(
                 .args(&args)
                 .args(["--app-id", &crate::package::app_id(entry)?])
                 .args(window.args());
+            let schemes = crate::package::read_config(entry)?.schemes;
+            if !schemes.is_empty() {
+                command.args(["--schemes", &schemes.join(",")]);
+            }
             run_local(&session, &mut command, "the Linux host")
         }
         // In place too: the AppKit host makes itself a regular app (menu
@@ -250,6 +290,7 @@ pub(crate) fn run(
             command
                 .args(&args)
                 .args(["--app-id", &crate::package::app_id(entry)?])
+                .args(crate::windows::host_args(entry, &work))
                 .args(window.args());
             run_local(&session, &mut command, "the Windows host")
         }
@@ -272,8 +313,9 @@ pub(crate) fn run(
             step.finish();
             let mut launch = vec!["launch", "--terminate-running-process", &udid, BUNDLE_ID];
             launch.extend(args.iter().map(String::as_str));
+            let env = simctl_app_env(&crate::package::read_config(entry)?);
             let step = ui::Step::start("launching the development host");
-            simctl(&launch)?;
+            simctl_with_env(&launch, &env)?;
             step.finish();
             // The simulator shares the Mac's network: 127.0.0.1 is the dev
             // server, so a host left running would join the next session
@@ -284,7 +326,7 @@ pub(crate) fn run(
             drop(stoppable);
             result
         }
-        Target::Android | Target::Web => unreachable!("handled above"),
+        Target::Android | Target::Web | Target::Tui => unreachable!("handled above"),
     }
 }
 
@@ -295,13 +337,13 @@ pub(crate) fn run(
 /// changed) finds its page still open, and it reloads by itself.
 fn run_web(
     entry: &Path,
-    port: u16,
+    listen: crate::dev::Listen,
     release: bool,
     limits: Option<HostLimits>,
 ) -> anyhow::Result<()> {
     // Built first in a checkout: the session serves the runtime it finds.
     crate::runtime::web(crate::runtime::WebKind::Dev, true)?.context("no web runtime")?;
-    let session = DevSession::start(entry, port, release, limits)?;
+    let session = DevSession::start(entry, listen, release, limits)?;
     session.print_web_url();
     session.watch(|| Ok(false))
 }
@@ -314,7 +356,7 @@ fn run_web(
 /// `nsh` builds it again and runs it anew.
 fn run_rust_app(
     entry: &Path,
-    port: u16,
+    listen: crate::dev::Listen,
     target: Target,
     device: Option<&str>,
     work: &Path,
@@ -340,6 +382,10 @@ fn run_rust_app(
         let mut info = serde_json::json!({ "name": name, "id": id });
         if let Some(appearance) = &config.appearance {
             info["appearance"] = appearance.as_str().into();
+        }
+        // The main window's launch options, as a package's `app.json`.
+        if let Some(window) = &config.window {
+            info["window"] = window.clone();
         }
         fs::write(dir.join("app.json"), info.to_string())?;
         Ok(())
@@ -380,6 +426,7 @@ fn run_rust_app(
         }
         Target::Ios => {
             let udid = simulator(device)?;
+            let env = simctl_app_env(&config);
             let out = run.join("ios");
             package_for_run(
                 &entry,
@@ -402,6 +449,7 @@ fn run_rust_app(
                     "--terminate-running-process",
                 ])
                 .args([&udid, &id])
+                .envs(env)
                 .env("SIMCTL_CHILD_NSH_DEVELOPMENT", "1");
             let result = run_rust_local(&app, &mut command);
             let _ = simctl(&["terminate", &udid, &id]);
@@ -447,11 +495,11 @@ fn run_rust_app(
         }
         Target::Web => {
             crate::runtime::web(crate::runtime::WebKind::Dev, true)?.context("no web runtime")?;
-            let session = DevSession::start(&entry, port, false, None)?;
+            let session = DevSession::start(&entry, listen, false, None)?;
             session.print_web_url();
             session.watch(|| Ok(false))
         }
-        Target::Gpui => unreachable!("refused by HostWindow::check"),
+        Target::Gpui | Target::Tui => unreachable!("handled before Rust runner selection"),
     }
 }
 
@@ -473,7 +521,9 @@ fn package_for_run(
         profile: None,
         keystore: None,
         abis,
+        format: crate::android::Format::Apk,
         run: false,
+        asset_url: None,
     })
 }
 
@@ -500,6 +550,118 @@ fn run_rust_local(app: &crate::rust_app::RustApp, command: &mut Command) -> anyh
     let _ = child.kill();
     let _ = child.wait();
     drop(stoppable);
+    result
+}
+
+/// Checks the terminal scale at the CLI/configuration boundary.
+pub(crate) fn parse_points_per_cell(value: &str) -> Result<String, String> {
+    let valid = value.split_once('x').is_some_and(|(width, height)| {
+        [width, height]
+            .into_iter()
+            .all(|part| part.parse::<f32>().is_ok_and(|n| n.is_finite() && n > 0.0))
+    });
+    if !valid {
+        return Err("points per Cell must be WIDTHxHEIGHT with finite, positive dimensions".into());
+    }
+    Ok(value.to_owned())
+}
+
+fn run_tui(
+    entry: &Path,
+    listen: crate::dev::Listen,
+    release: bool,
+    flags: HostFlags,
+    work: &Path,
+) -> anyhow::Result<()> {
+    let HostFlags {
+        limits,
+        trace,
+        fps,
+        points_per_cell,
+    } = flags;
+    let config = crate::package::read_config(entry)?;
+    let cells = points_per_cell
+        .as_deref()
+        .or(config.tui.points_per_cell.as_deref())
+        .unwrap_or("8x16");
+    parse_points_per_cell(cells).map_err(anyhow::Error::msg)?;
+    fs::create_dir_all(work)?;
+    let path = work.join("tui.log");
+    let building = ui::Step::start(format!("building {}", ui::path(entry)));
+    let session = DevSession::start(entry, listen, release, limits)?;
+    building.finish();
+    // A Rust root also uses the development host, which receives the Root event.
+    let host = crate::runtime::test_host(Platform::Tui)?;
+    // Preparation stays visible until the host takes over the terminal. From
+    // here, diagnostics belong in the panel so they cannot overwrite its UI.
+    let _terminal_logs = ui::LogFile::open(&path)?;
+    let diagnostics = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    let mut command = Command::new(host);
+    command
+        .env("NSH_DEV_APP_DIR", work.parent().context("app directory")?)
+        .args([
+            "--dev-server",
+            &session.local_url(),
+            "--points-per-cell",
+            cells,
+        ])
+        .arg("--log-file")
+        .arg(&path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(diagnostics);
+    if fps {
+        command.arg("--fps");
+    }
+    if trace {
+        command.arg("--trace");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP);
+    }
+    let _stoppable = ui::Stoppable::new();
+    let mut child = command
+        .spawn()
+        .context("launch the terminal development host")?;
+    #[cfg(windows)]
+    let _job = KillOnClose::assign(&child);
+    let result = session.watch(|| match child.try_wait()? {
+        Some(status) if status.success() => Ok(true),
+        Some(status) => bail!(
+            "the terminal host exited with {status}; see {}",
+            path.display()
+        ),
+        None => Ok(false),
+    });
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        // Let the host leave raw mode and the alternate screen before ending it.
+        #[cfg(unix)]
+        // SAFETY: this is the live child owned by this invocation.
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+        }
+        #[cfg(windows)]
+        // SAFETY: the child was started in its own console process group.
+        unsafe {
+            windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent(
+                windows_sys::Win32::System::Console::CTRL_BREAK_EVENT,
+                child.id(),
+            );
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while matches!(child.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            let _ = child.kill();
+        }
+    }
+    let _ = child.wait();
     result
 }
 
@@ -594,7 +756,7 @@ impl Drop for KillOnClose {
 /// host.
 fn run_android(
     entry: &Path,
-    port: u16,
+    listen: crate::dev::Listen,
     release: bool,
     limits: Option<HostLimits>,
     work: &Path,
@@ -605,7 +767,7 @@ fn run_android(
     let serial = android::device(&sdk)?;
     // As on iOS: the host of a previous session must not connect first.
     let _ = android::adb(&sdk, &serial, &["shell", "am", "force-stop", BUNDLE_ID]);
-    let session = DevSession::start(entry, port, release, limits)?;
+    let session = DevSession::start(entry, listen, release, limits)?;
     install_android_host(&sdk, &serial, work, &crate::runtime::android(true, &[])?)?;
     // The device reaches the dev server on its own 127.0.0.1, until the
     // run ends.
@@ -663,8 +825,11 @@ pub(crate) fn install_android_host(
                 label: APP_NAME,
                 version_name: "0.1.0",
                 version_code: 1,
+                target_sdk: android::DEFAULT_TARGET_SDK,
                 activity: "com.longbridge.nsh.DevActivity",
                 dev: true,
+                notifications: true,
+                schemes: &[],
                 rust: false,
                 dark: false,
                 runtime,
@@ -788,9 +953,19 @@ fn is_stale(src: &Path, dest: &Path) -> anyhow::Result<bool> {
 }
 
 pub(crate) fn simctl(args: &[&str]) -> anyhow::Result<String> {
+    simctl_with_env(args, &[])
+}
+
+/// [`simctl`] with variables in its environment: `launch` passes those
+/// named `SIMCTL_CHILD_<name>` to the app as `<name>` ([`simctl_app_env`]).
+pub(crate) fn simctl_with_env(
+    args: &[&str],
+    env: &[(String, std::ffi::OsString)],
+) -> anyhow::Result<String> {
     let output = Command::new("xcrun")
         .arg("simctl")
         .args(args)
+        .envs(env.iter().map(|(name, value)| (name, value)))
         .output()
         .context("run xcrun simctl (is Xcode installed?)")?;
     if !output.status.success() {
@@ -801,6 +976,52 @@ pub(crate) fn simctl(args: &[&str]) -> anyhow::Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The variables of this environment that the app's `nsh.json` declares in
+/// `capabilities.process.env`, named for `xcrun simctl launch`, which
+/// passes the app only its caller's `SIMCTL_CHILD_<name>` variables: the
+/// app in the simulator reads them in `process.env` as the desktops' hosts,
+/// the CLI's children, do. Only declared names, never the whole
+/// environment: the declaration is what the app may read.
+pub(crate) fn simctl_app_env(
+    config: &crate::package::AppConfig,
+) -> Vec<(String, std::ffi::OsString)> {
+    let declared = config
+        .capabilities
+        .as_ref()
+        .and_then(|c| nsh_core::access::Capabilities::from_json_lenient(c).ok())
+        .map(|(caps, _)| caps.process.env)
+        .unwrap_or_default();
+    simctl_child_env(&declared, |name| std::env::var_os(name))
+}
+
+/// What the simulator sets for each app it launches: its container's paths
+/// and the simulated runtime's. The app reads the simulator's values; the
+/// Mac's would point it outside its container.
+const SIMULATOR_ENV: [&str; 4] = ["HOME", "CFFIXED_USER_HOME", "TMPDIR", "PATH"];
+
+/// [`simctl_app_env`] over the environment `var` reads. Each name is looked
+/// up as the OS matches names, as the runtime's `process.env` does
+/// (exactly on macOS, where the simulator runs).
+fn simctl_child_env(
+    declared: &[String],
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<(String, std::ffi::OsString)> {
+    let mut env: Vec<(String, std::ffi::OsString)> = Vec::new();
+    for name in declared {
+        let child = format!("SIMCTL_CHILD_{name}");
+        let simulators = SIMULATOR_ENV.contains(&name.as_str())
+            || name.starts_with("DYLD_")
+            || name.starts_with("SIMULATOR_");
+        if simulators || env.iter().any(|(n, _)| *n == child) {
+            continue;
+        }
+        if let Some(value) = var(name) {
+            env.push((child, value));
+        }
+    }
+    env
 }
 
 #[derive(Deserialize)]
@@ -902,7 +1123,8 @@ fn info_plist(target: Target) -> String {
         | Target::Macos
         | Target::Windows
         | Target::Web
-        | Target::Gpui => {
+        | Target::Gpui
+        | Target::Tui => {
             "<key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>\n    \
              <key>MinimumOSVersion</key><string>15.0</string>\n    \
              <key>CFBundleSupportedPlatforms</key><array><string>iPhoneSimulator</string></array>\n    \
@@ -911,6 +1133,12 @@ fn info_plist(target: Target) -> String {
              <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>"
         }
     };
+    // The host runs any app: it may recognize speech.
+    let usage = crate::package::USAGE_DESCRIPTIONS
+        .iter()
+        .map(|(key, text)| format!("<key>{key}</key><string>{text}</string>"))
+        .collect::<Vec<_>>()
+        .join("\n    ");
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -923,6 +1151,7 @@ fn info_plist(target: Target) -> String {
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>UIApplicationSupportsMultipleScenes</key><false/>
+    {usage}
     {platform}
 </dict>
 </plist>
@@ -934,7 +1163,76 @@ fn info_plist(target: Target) -> String {
 mod tests {
     use clap::ValueEnum as _;
 
-    use super::{HostWindow, Target};
+    use super::{HostWindow, Target, simctl_app_env, simctl_child_env};
+
+    /// The simulator's app gets the declared variables this environment
+    /// has, prefixed for simctl, each once; undeclared ones stay behind,
+    /// and so do those the simulator sets for its apps (`HOME`).
+    #[test]
+    fn simctl_passes_only_declared_variables() {
+        let vars = |name: &str| {
+            ["NSH_GALLERY_DEMO", "API_TOKEN", "HOME", "DYLD_LIBRARY_PATH"]
+                .contains(&name)
+                .then(|| format!("{name} value").into())
+        };
+        let declared = [
+            "NSH_GALLERY_DEMO",
+            "NSH_GALLERY_SECTION",
+            "NSH_GALLERY_DEMO",
+            "API_TOKEN",
+            "HOME",
+            "DYLD_LIBRARY_PATH",
+        ]
+        .map(String::from);
+        assert_eq!(
+            simctl_child_env(&declared, vars),
+            [
+                (
+                    "SIMCTL_CHILD_NSH_GALLERY_DEMO".to_owned(),
+                    "NSH_GALLERY_DEMO value".into()
+                ),
+                (
+                    "SIMCTL_CHILD_API_TOKEN".to_owned(),
+                    "API_TOKEN value".into()
+                ),
+            ]
+        );
+        assert!(simctl_child_env(&[], vars).is_empty());
+    }
+
+    /// An app without a declaration of `process.env`, or none at all, gets
+    /// nothing from this environment; one that declares a name gets it
+    /// (`cargo test` sets `CARGO_PKG_NAME`).
+    #[test]
+    fn simctl_passes_nothing_undeclared() {
+        let config = |json: &str| {
+            let mut config = crate::package::AppConfig::default();
+            config.capabilities = Some(serde_json::from_str(json).unwrap());
+            config
+        };
+        assert!(simctl_app_env(&crate::package::AppConfig::default()).is_empty());
+        assert!(simctl_app_env(&config(r#"{ "clipboard": true }"#)).is_empty());
+        assert_eq!(
+            simctl_app_env(&config(r#"{ "process": { "env": ["CARGO_PKG_NAME"] } }"#))
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            ["SIMCTL_CHILD_CARGO_PKG_NAME"]
+        );
+    }
+
+    /// Only phones and browsers that may be on the network get a dev
+    /// server listening on every interface; hosts on this machine get
+    /// loopback.
+    #[test]
+    fn only_targets_that_may_be_other_machines_listen_on_the_network() {
+        let network: Vec<_> = Target::value_variants()
+            .iter()
+            .filter(|target| target.uses_network())
+            .copied()
+            .collect();
+        assert_eq!(network, [Target::Ios, Target::Android, Target::Web]);
+    }
 
     /// `--window-size` reaches every desktop host; GPUI runs no app of
     /// Rust only.

@@ -11,8 +11,8 @@ use super::{
     Accessible, AnyElement, Interactive, IntoReactive,
     builder::{ElNode, Element, IntoElement, IntoListener, Listener, ParentElement},
     events::{
-        self, CaretEvent, Composition, NativeEvent, OverlayPosition, Selection, VideoInfo,
-        VideoProgress, WebNavigation,
+        self, CaretEvent, Composition, HintReason, NativeEvent, OverlayPosition, Selection,
+        VideoInfo, VideoProgress, WebNavigation,
     },
 };
 use crate::{
@@ -1026,6 +1026,33 @@ impl Screen {
         })
     }
 
+    /// The leading header button is UIKit's own, drawn instead of the
+    /// `header_left` view (iOS; a press on it presses that view's first
+    /// pressable view).
+    pub fn header_left_system_item(self, item: impl IntoReactive<crate::HeaderSystemItem>) -> Self {
+        self.bind_prop(item, |item| {
+            Prop::Screen(ScreenProp::HeaderLeftSystemItem(Some(item)))
+        })
+    }
+
+    /// The trailing header button is UIKit's own showing the SF Symbol of
+    /// this name, drawn instead of the `header_right` view (iOS; a press on
+    /// it presses that view's first pressable view).
+    pub fn header_right_symbol(self, name: impl IntoReactive<super::SharedString>) -> Self {
+        self.bind_prop(name, |n| {
+            Prop::Screen(ScreenProp::HeaderRightSymbol(Some(Arc::from(n.as_str()))))
+        })
+    }
+
+    /// The leading header button is UIKit's own showing the SF Symbol of
+    /// this name, drawn instead of the `header_left` view (iOS; a press on
+    /// it presses that view's first pressable view).
+    pub fn header_left_symbol(self, name: impl IntoReactive<super::SharedString>) -> Self {
+        self.bind_prop(name, |n| {
+            Prop::Screen(ScreenProp::HeaderLeftSymbol(Some(Arc::from(n.as_str()))))
+        })
+    }
+
     /// Whether the back button shows (default true).
     pub fn header_back_visible(self, visible: impl IntoReactive<bool>) -> Self {
         self.bind_prop(visible, |v| Prop::Screen(ScreenProp::HeaderBackVisible(v)))
@@ -1047,6 +1074,18 @@ impl Screen {
     /// How the screen enters and leaves.
     pub fn animation(self, animation: impl IntoReactive<ScreenAnimation>) -> Self {
         self.bind_prop(animation, |a| Prop::Screen(ScreenProp::Animation(a)))
+    }
+
+    /// The program it comes and goes through instead of its
+    /// [`Self::animation`] (TS: `transitionShader`); `None` (a binding can
+    /// go back to it) leaves the change to the animation.
+    pub fn transition_shader(
+        self,
+        shader: impl IntoReactive<Option<crate::shader::TransitionShader>>,
+    ) -> Self {
+        self.bind_prop(shader, |s: Option<crate::shader::TransitionShader>| {
+            Prop::TransitionShader(s.map(Into::into))
+        })
     }
 
     /// What the status bar shows while the screen is up (iOS and Android;
@@ -1110,6 +1149,19 @@ impl Overlay {
         )
     }
 
+    /// Lays the element carrying `cover`, inside it, over its anchor (a
+    /// select's selected item over the trigger) instead of placing it on
+    /// a side ([`crate::overlay::OverlayConfig::cover`]). A ref is not
+    /// tracked: `shown` (tracked) says when that element is rendered, as
+    /// its `on_layout` can tell.
+    pub fn cover(self, cover: &super::ElementRef, shown: impl Fn() -> bool + 'static) -> Self {
+        let cover = *cover;
+        self.bind_prop(
+            move || if shown() { cover.node() } else { None },
+            |id| Prop::Overlay(OverlayProp::Cover(id)),
+        )
+    }
+
     /// Places it beside the element carrying `anchor`, outside the edges
     /// of the one carrying `edges` (the menu around it), as a submenu
     /// beside its row ([`OverlayAnchor::Beside`]).
@@ -1127,7 +1179,9 @@ impl Overlay {
 
     /// Places it against what the element carrying `anchor` draws: the box
     /// around its children, so a trigger in a wrapper its parent stretches
-    /// is placed against what shows ([`OverlayAnchor::Content`]).
+    /// is placed against what shows ([`OverlayAnchor::Content`]). A ref a
+    /// component gives its slot goes by the app's element's own box,
+    /// whether a TSX or a Rust app filled the slot.
     pub fn anchor_content(self, anchor: &super::ElementRef) -> Self {
         let anchor = *anchor;
         self.bind_prop(
@@ -1196,7 +1250,9 @@ impl Overlay {
 
     /// Makes it a hint (a tooltip): shown once the pointer rested on its
     /// anchor (its parent without one) for `delay`, until the pointer
-    /// leaves or presses the anchor, on the desktops only; it is placed
+    /// leaves or presses the anchor, on the desktops only, and while the
+    /// keyboard focus is on the anchor (or in it, outside an overlay), in
+    /// every idiom, until the focus leaves; Escape hides it. It is placed
     /// against the anchor and should not take the pointer
     /// ([`Interactive::pointer_events`] none). [`Self::hint_open`] decides
     /// instead of the pointer.
@@ -1212,16 +1268,26 @@ impl Overlay {
         self.bind_prop(open, |o| Prop::Overlay(OverlayProp::Open(o)))
     }
 
-    /// The pointer rested on a hint's anchor for its delay: it asks to
-    /// show (and shows, unless [`Self::hint_open`] decides).
-    pub fn on_hint_show<M>(self, listener: impl IntoListener<(), M>) -> Self {
-        self.listen(EventKind::Show, listener.into_listener(), events::unit)
+    /// The pointer rested on a hint's anchor for its delay, or the
+    /// keyboard focus came to it: it asks to show (and shows, unless
+    /// [`Self::hint_open`] decides), with why.
+    pub fn on_hint_show<M>(self, listener: impl IntoListener<HintReason, M>) -> Self {
+        self.listen(
+            EventKind::Show,
+            listener.into_listener(),
+            events::hint_reason,
+        )
     }
 
-    /// The pointer left or pressed a hint's anchor, or the hint left the
-    /// view, after it asked to show: it asks to hide.
-    pub fn on_hint_hide<M>(self, listener: impl IntoListener<(), M>) -> Self {
-        self.listen(EventKind::Dismiss, listener.into_listener(), events::unit)
+    /// The pointer left or pressed a hint's anchor, the focus left it,
+    /// Escape was pressed or the hint left the view, after it asked to
+    /// show: it asks to hide, with why.
+    pub fn on_hint_hide<M>(self, listener: impl IntoListener<HintReason, M>) -> Self {
+        self.listen(
+            EventKind::Dismiss,
+            listener.into_listener(),
+            events::hint_reason,
+        )
     }
 
     /// The core placed it against its anchor: the side it went on, its
@@ -1240,6 +1306,18 @@ impl Modal {
     pub fn animation(self, animation: impl IntoReactive<ModalAnimation>) -> Self {
         self.bind_prop(animation, |animation: ModalAnimation| {
             Prop::Modal(ModalProp::Animation(animation))
+        })
+    }
+
+    /// The program it comes and goes through instead of its
+    /// [`Self::animation`] (TS: `transitionShader`); `None` (a binding can
+    /// go back to it) leaves the change to the animation.
+    pub fn transition_shader(
+        self,
+        shader: impl IntoReactive<Option<crate::shader::TransitionShader>>,
+    ) -> Self {
+        self.bind_prop(shader, |s: Option<crate::shader::TransitionShader>| {
+            Prop::TransitionShader(s.map(Into::into))
         })
     }
 
@@ -1396,6 +1474,55 @@ impl WebView {
         self.bind_prop(enabled, |enabled: bool| {
             Prop::Native(NativeProp::BackForwardGestures(enabled))
         })
+    }
+
+    /// Keeps the page's website data (cookies, storage, the cache) only
+    /// as long as the web view, apart from the app's other web views
+    /// (default no; Android: no HTTP cache and no saved form data). Read
+    /// when the web view is made, so it takes a value, not a signal.
+    pub fn incognito(self, incognito: bool) -> Self {
+        self.set(Prop::Native(NativeProp::Incognito(incognito)))
+    }
+
+    /// Serves the page the URLs of `scheme` (`"app-image"` for
+    /// `<img src="app-image:1">`) from the app: `handler` answers each
+    /// request with bytes and a MIME type
+    /// ([`WebResourceRequest::respond`](crate::web_resource::WebResourceRequest::respond)),
+    /// now or later and from any thread, and the web engine loads them as
+    /// it loads any subresource, with no `data:` URL or script in between
+    /// (iOS and macOS, Linux). The platform calls `handler` on its main
+    /// thread, so it returns at once and leaves slow work to a thread of
+    /// its own. Several schemes are several calls; one called again
+    /// replaces its handler. `scheme` is a letter followed by letters,
+    /// digits, `+`, `-` or `.`, none of the web's or the system's (`http`,
+    /// `file`, `data`, ...): another is ignored with a warning. Read when
+    /// the web view is made, as [`incognito`](Self::incognito)
+    /// ([`crate::web_resource`]).
+    pub fn url_scheme(
+        self,
+        scheme: &str,
+        handler: impl Fn(crate::web_resource::WebResourceRequest) + Send + Sync + 'static,
+    ) -> Self {
+        let scheme = match crate::web_resource::WebUrlScheme::new(scheme, handler) {
+            Ok(scheme) => scheme,
+            Err(e) => {
+                log::warn!(target: "js", "web view: {e}");
+                return self;
+            }
+        };
+        let mut schemes = self
+            .0
+            .attrs
+            .props
+            .iter()
+            .find_map(|p| match p {
+                Prop::Native(NativeProp::UrlSchemes(list)) => Some(list.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        schemes.retain(|s| s.scheme() != scheme.scheme());
+        schemes.push(scheme);
+        self.set(Prop::Native(NativeProp::UrlSchemes(schemes)))
     }
 
     /// A page started loading.
@@ -2310,6 +2437,20 @@ impl From<Drawing> for Painter {
 
 crate::static_reactive!(ScreenAnimation: ScreenAnimation);
 
+/// A program where an optional one goes (`.transition_shader(wipe)`).
+impl IntoReactive<Option<crate::shader::TransitionShader>> for crate::shader::TransitionShader {
+    fn into_reactive(self) -> super::Reactive<Option<crate::shader::TransitionShader>> {
+        super::Reactive::Static(Some(self))
+    }
+}
+
+/// A backdrop where an optional one goes (`.macos_backdrop(backdrop)`).
+impl IntoReactive<Option<crate::MacOsBackdrop>> for crate::MacOsBackdrop {
+    fn into_reactive(self) -> super::Reactive<Option<crate::MacOsBackdrop>> {
+        super::Reactive::Static(Some(self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2352,6 +2493,42 @@ mod tests {
         u.0.iter()
             .find(|(n, _)| &**n == name)
             .map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn screens_and_modals_take_a_transition_shader() {
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let source = "struct Uniforms { edge: f32 }\n\
+            fn shade(uv: vec2f) -> vec4f {\n    \
+            return select(sample_from(uv), sample_to(uv), uv.x < nsh.progress * uniforms.edge);\n}\n";
+        let shader = crate::shader::Shader::compile(source).expect("compiles");
+        let wipe = crate::shader::TransitionShader::new(shader)
+            .uniform("edge", 1.0_f32)
+            .duration(std::time::Duration::from_millis(400));
+        let expected = crate::shader::NavShaderSpec {
+            source: source.into(),
+            uniforms: ShaderUniforms(vec![("edge".into(), UniformValue::Number(1.0))]),
+            duration: Some(400.0),
+        };
+        let spec = |attrs: &super::super::builder::Attrs| {
+            attrs.props.iter().find_map(|p| match p {
+                Prop::TransitionShader(s) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        let page = screen().transition_shader(wipe.clone()).0;
+        assert_eq!(spec(&page.resolved_attrs()), Some(Some(expected.clone())));
+        let dialog = modal().transition_shader(wipe.clone()).0;
+        assert_eq!(spec(&dialog.resolved_attrs()), Some(Some(expected.clone())));
+        // A binding goes back to the page's or the dialog's own animation.
+        let on = signal(true);
+        let bound = screen()
+            .transition_shader(move || on.get().then(|| wipe.clone()))
+            .0;
+        assert_eq!(spec(&bound.resolved_attrs()), Some(Some(expected)));
+        on.set(false);
+        assert_eq!(spec(&bound.resolved_attrs()), Some(None));
     }
 
     #[test]
@@ -2414,5 +2591,29 @@ mod tests {
         let set = uniforms(&view.0.attrs);
         assert_eq!(set.0.len(), 1);
         assert_eq!(value(&set, "speed"), Some(UniformValue::Number(3.0)));
+    }
+
+    #[test]
+    fn web_view_url_scheme_builder_collects_schemes() {
+        let web = web_view_html("<img src=\"a:1\">", None)
+            .url_scheme("a", |request| request.fail())
+            .url_scheme("b", |request| request.fail())
+            // Replaces `a`'s handler.
+            .url_scheme("A", |request| request.fail())
+            // Not a scheme the app may serve: ignored.
+            .url_scheme("https", |request| request.fail());
+        let schemes: Vec<String> = web
+            .0
+            .attrs
+            .props
+            .iter()
+            .find_map(|p| match p {
+                Prop::Native(NativeProp::UrlSchemes(list)) => {
+                    Some(list.iter().map(|s| s.scheme().to_owned()).collect())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(schemes, ["b", "a"]);
     }
 }

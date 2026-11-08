@@ -16,9 +16,8 @@
 //!   mouse, wheel, trackpad and keyboard and picks views itself
 //!   ([`input`]); scroll views keep offsets of their own ([`scroll`]).
 //!
-//! [`AppView`] is one surface as a view (for embedding); [`run_app`] opens
-//! one in a window, and [`Panel`] a second one of its own, opened from the
-//! setup hook of [`run_app_with`]. Off macOS this crate is empty.
+//! [`AppView`] is one surface as a view (for embedding); [`run_app`]
+//! opens one in a window. Off macOS this crate is empty.
 
 #![cfg(target_os = "macos")]
 
@@ -36,6 +35,7 @@ pub mod dev;
 mod file_drop;
 mod file_requests;
 mod fps;
+mod global_shortcut;
 mod gpu;
 mod image;
 mod input;
@@ -44,12 +44,14 @@ mod mount;
 mod native;
 mod navigation;
 mod net;
-mod panel;
 mod picker;
 mod screen_color;
 mod scroll;
 mod selectable_view;
 mod shader;
+mod sight;
+// Shared with iOS.
+use nsh_platform_apple::{audio, notifications, speech};
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -57,8 +59,11 @@ mod system;
 mod text;
 mod text_input;
 mod transition;
+mod tray;
 mod view;
 mod visual;
+mod window;
+mod window_state;
 
 pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
@@ -72,10 +77,10 @@ pub use objc2_foundation;
 pub use crate::app::set_root;
 pub use crate::{
     app::{
-        AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, run_app_with, set_ui_sets,
+        AppOptions, AppSource, AppView, WindowDisplay, quit_app, run_app, set_components,
+        set_ui_sets,
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
-    panel::{Panel, PanelError, PanelOptions, WindowLevel},
     text::CoreTextEngine,
 };

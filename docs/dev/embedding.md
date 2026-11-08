@@ -2,7 +2,10 @@
 
 - `nsh package <entry> --target ios|ios-simulator|android|linux|macos|windows` builds an installable app from the prebuilt runtime: metadata from
   `nsh.json` next to the entry (`name`, `id`, `version`, `build`, `icon`; `appearance` also sets `UIUserInterfaceStyle`
-  and a dark window theme, so the launch screen is in it) or flags. iOS: `.app`, `.ipa` with `--sign <identity>
+  and a dark window theme, so the launch screen is in it) or flags. iOS and macOS packages add the app's
+  `ios` / `macos` `infoPlist` keys and `entitlements` (`crates/nsh-cli/src/apple.rs`: JSON as property list values,
+  the keys NSH sets refused with what to set instead; device builds check entitlements against the profile, which
+  keeps the app's values in place of its own). iOS: `.app`, `.ipa` with `--sign <identity>
   --profile <file.mobileprovision>` (entitlements come from the profile; icons are compiled by `actool` into `Assets.car`).
   Android: an APK assembled without Gradle (`aapt2 link`, native libraries stored uncompressed and 16 KB ZIP aligned, `apksigner`;
   the debug key unless `--keystore`). Linux: a directory `<name>/` with the release runner (`crates/nsh-linux-app`) as
@@ -22,6 +25,14 @@
   are needed; `--run` launches the executable.
   GPUI is the backend for embedding in GPUI and GPUI Kit apps (below), which ship it in their own executable: `nsh
   package` refuses `--target gpui` and names this OS's target, the one backend each desktop packages apps with.
+- Links: `nsh.json` `"schemes": [...]` names the URL schemes a packaged app claims (checked by
+  `nsh_core::url_scheme::schemes_from_json` in the bundler, the CLI and a Rust app's generated root). `nsh package`
+  declares them to the system (`CFBundleURLTypes` on macOS and iOS) and writes them to `app.json`, which the runner
+  reads with the app's id (`nsh_engine::Bundle::url_schemes`; a Rust app's `Root::url_schemes`), never
+  from the app's code. The platform reports every URL the system opens the app with as the root's `UrlScheme` event; the
+  core drops the links of other schemes and keeps the rest until the app listens (`UrlScheme.on("open")`,
+  `next_url_scheme_open()`). Links are untrusted input: the app checks what they ask for, and nothing navigates on its own.
+  A signed package embedded in another app claims no schemes: the embedding app owns them.
 - Android's `libnsh.so` uses 16 KB ELF LOAD alignment and a 16 KB-aligned RELRO end, set by `nsh-platform-android/build.rs` and
   the generated Android runtimes' build scripts. `cargo xtask android` checks every linked library's LOAD alignment
   with the NDK's `llvm-objdump` before copying it into the runtime; `cargo xtask dist` uses the same checked libraries
@@ -35,11 +46,18 @@
   (`JNI_OnLoad` fails without them) and binds the `native` methods of `Native`, `Net` and `SelectableView` by name,
   while Java code names few of them, so R8 removed or renamed them (`ClassNotFoundException: TextLayouts`). The rule
   keeps the whole package rather than a list that a new JNI lookup would have to extend.
+- Fonts the host ships: `NshView.registerFont(byte[])` and `NshAppView.registerFont(_:)` register a TrueType, OpenType, WOFF or WOFF2 file with the view, before a load or while an app runs. Apps then set `fontFamily` to the family name in the file and do not import it, so the file is not packed into each bundle. The same file registered again is kept once.
 - Embedding: iOS apps link `NativeShell.xcframework` and `import NativeShell` (Swift: `NshAppView`, a `UIView`;
   `NshTrust`, `NshPackage`, `NshLimits`, `NshError`); Android apps add `nsh.aar` and use `com.longbridge.nsh.NshView`.
   `*Dev` / `-dev` variants can also load from a dev server. See `examples/embed-*`. Rust desktop apps use the platform
   crate itself: `nsh_platform_linux::AppView` (a GTK widget), `nsh_platform_macos::AppView` (an `NSView`) or
   `nsh_platform_windows::AppView` (a child window of the app's `HWND`, run by the app's message loop; `windows.md`).
+  An embedded macOS view draws no window background of its own: to show what is behind the window (a
+  `macos={{ backdrop }}` with `behindWindow`, a translucent panel), the embedding app makes its `NSWindow`
+  nonopaque with a clear `backgroundColor` itself. `AppOptions::transparent` supplies a custom `run_app` host's
+  initial default; explicit main-window attributes and later window updates take precedence. Standard hosts
+  leave that option false but can request transparency through their window configuration. A view's
+  `behindWindow` material does not enable window transparency. An `AppView` never changes its host's window.
   GPUI and GPUI Kit apps use `nsh_platform_gpui::AppView`, a GPUI view (`gpui.md`): `let view = cx.new(|cx|
   AppView::new(options, window, cx));` inside a window, `view.read(cx).load(App::Js(bundle))`, then put the entity in
   any element tree (in a GPUI Kit window, as a child of its `Root`); it fills the space its parent gives it and takes
@@ -49,7 +67,11 @@
 - **Native components** (`nsh`'s `nativeComponent`; `component.rs`, `ComponentBox.java`): the embedding app registers its own native
   views by name — Swift `NshAppView.register(component:) { context in … }` (`NshComponent`: `view`, `setProp`,
   `command`), Java `NshView.registerComponent(name, factory)` (`NshComponent`), Rust `AppView::register_component`
-  (`NativeComponent`) — one registry per view, no globals. Names under `nsh/` are NSH's own
+  (`NativeComponent`) — one registry per view, no globals. An app's own crate (`nsh.json` `"rust"`) registers into
+  the hosts and runners nsh generates for it with `#[native_components(<platform>)]` (Windows, macOS, Linux, iOS:
+  the platform's `set_components`, which every `AppView` calls on its registry when it is made, so a name registered
+  on the view afterwards replaces the crate's; a process-wide function as `set_ui_sets`' sets are, which only the
+  generated hosts and runners set, so an embedding app's registries stay its views'; `docs/dev/tooling.md`). Names under `nsh/` are NSH's own
   (`nsh_core::platform::is_reserved_component`): each backend registers them itself (`nsh/tab-bar`, `nsh/mobile`'s
   `TabBar`, on iOS and Android) and refuses an embedding app's registration of one with a warning. JS declares one with `nativeComponent<P, E>(name, { props,
   events })`; the element is a `<native>` leaf: `component` names it, each own prop goes as `$name` (any JSON value,
@@ -185,10 +207,18 @@
   the apps' `Picker.pickImages` with it: `EngineConfig::picker` (GPUI: `AppView::set_picker`, from the next load) gets
   every pick's `PickRequest` and returns a future of `PickedFile`s (bytes as `ImageData`, which may come from any
   thread), and the core resolves the pick with them (cut to the limit, sizes, types and extensions filled in from the
-  bytes), sending no `Command::PickImages`. The capability check comes first, so a pick the app is not granted never
+  bytes), sending no `Command::PickImages`. `PickerBackend::pick_files` answers `Picker.pickFiles` the same way (a
+  backend that does not implement it cancels those picks; the platform's picker is still not shown). The capability check comes first, so a pick the app is not granted never
   reaches it. Where no backend is set, the platform's picker shows (`images.md` "Picked images"): on iOS and Android it
   needs nothing of the embedding app (PhotosUI is loaded on first use; Android's result comes to a headless fragment of
   the view's activity).
+- **The host's own recognizer** (`nsh_core::speech::SpeechBackend`): an embedding app that recognizes speech its own
+  way answers the apps' `Speech` with it: `EngineConfig::speech` gets every session's `SpeechRequest` and a
+  `SpeechSink` it reports to from any thread (`start`, `result` with the whole transcript, one `end`), and returns the
+  `SpeechControl` the core stops and aborts it with; `available` answers `Speech.available()`. No `Command::Speech` is
+  sent then. The capability check comes first. Where no backend is set, macOS and iOS recognize with the Speech
+  framework (the app's Info.plist needs `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`,
+  which `nsh package` writes); other platforms end every session with `unavailable`.
 - **The host's locale and text size** (`nsh_core::platform::HostEnvironment`): an embedding app that lets its users
   pick a language or a text size of its own gives them to its views in place of the system's: Rust `AppView::set_locale(Option<Locale>)`
   / `set_font_scale(Option<f32>)` (GPUI, AppKit, GTK, Win32; GPUI's take `cx`), Swift `NshAppView.locale` / `fontScale`
@@ -215,28 +245,6 @@
   token takes both appearances: one the file gives only in `light` (or `theme`) is that color in dark mode too, as
   in a theme file, so an override that differs in dark mode names it in `dark`. GPUI's `AppView::set_theme` /
   `set_theme_json` (below) give a whole theme instead, the default's where the file is silent.
-- **A host's panel windows** (`Panel`, `crates/nsh-platform-macos/src/panel.rs`; the same API on Windows and Linux):
-  the types are `nsh_core::desktop`'s (`PanelOptions`, `WindowLevel`, `PanelError`), the toolkit-free part of a
-  platform's window, and a backend only maps and opens them. `PanelOptions` is `#[non_exhaustive]`, built with
-  `PanelOptions::new()` and its `with_*` methods. A host that needs a second window of its own (a floating palette, a
-  quick-look window) returns its panels from `run_app_with`'s `setup` hook, which runs on the thread that runs the
-  app's message loop (the main thread on macOS and Linux, the `nsh-ui` thread `run_app` spawns on Windows) — the only
-  thread `Panel::open` opens one on, as `Panel` is not `Send` (anywhere else it is `PanelError::WrongThread`). Each is
-  opened with `Panel::open(options, app, source)`, giving it an `AppSource` of its own (a Rust root, a bundle, a dev
-  server): the panel runs its own app and engine (`AppView`) beside the main window's, and lives as long as the app.
-  A panel has no title bar by default (`with_borderless(false)` gives it one), floats at a `WindowLevel` (`Normal`, `Floating` —
-  above other apps' windows — or `AboveDock`), may be transparent, move by its background, hide when the app is
-  inactive and take the keyboard without activating the app (`nonactivating`); `show`, `hide`, `set_frame`,
-  `set_level` and `set_title` change it while it is open, and `close` (or dropping the `Panel`) closes the window and
-  stops its app. `PanelOptions::size`'s `None` opens it at 70% of the screen, and `PanelOptions::position`
-  (`Option<Point<Points>>`) places its top-left corner from the primary screen's, as `WindowFrame`'s `x` and `y` do.
-  `hides_on_resign_key` hides it when it loses the keyboard (macOS's `windowDidResignKey:`, Win32's `WM_KILLFOCUS`),
-  the signal a `nonactivating` panel has, which never deactivates the app. `examples/panel/native/src/main.rs` opens
-  one from the `setup` hook and gives its app launch parameters through `AppOptions::host` (the app reads them as
-  `host.params`). The limits are the platforms': Win32 maps the options to window styles and z-order levels
-  (`Floating` and `AboveDock` are both topmost) and has no transparency, deactivation hide or background drag; GTK 4
-  cannot float a window above others, position one or keep it from activating the app, and a transparent panel is
-  best effort; each backend's module docs list what it leaves out.
 - **The iOS SDK** (`crates/xtask/src/ios.rs`): per platform slice (device, simulator, Catalyst) a static
   `NativeShell.framework` whose binary is `nsh-platform-ios` with feature `embed` (built by `cargo rustc --crate-type
   staticlib`, so the hosts never build or export it) merged by `libtool` with the Swift module, compiled with library
@@ -330,6 +338,13 @@ NSH draws (`src/layers.rs`).
   (`nsh_engine::data_dir()`) on the desktops (`AppOptions::data_dir` to change it), `Application Support/nsh` on iOS,
   `filesDir/nsh` on Android. `AppOptions::storage`, `NshAppView.storageDirectory` and `NshView.setStorageDirectory`
   override one app's place; all from the next load.
+- **Notifications.** The process's notifications (`nsh`'s `Notifications`) belong to the embedding app unless it
+  hands them to the app it embeds: `AppOptions::notifications` on macOS and Windows (off by default; `run_app` sets
+  it). Then the view's app owns them for the whole process: on macOS NSH becomes the notification center's delegate
+  (a delegate the embedding app already set stays), on Windows the process takes the app's id as its
+  AppUserModelID, registers it for toasts and hears their presses; the first such view's app wins. Without it the
+  permission is `unavailable`, `show` resolves `false` and the badge is left alone. On Linux the desktop portal knows
+  the app by its id either way.
 - **Caches.** An app's caches (today the images it downloads, `nsh_core::image::DiskCache`) live in
   `<root>/<app id>/<kind>`, which the engine opens from `EngineConfig::cache` (`nsh_engine::CacheOptions`: a
   `CacheLocation` (`System`, `Dir`, `Off`) and a `CachePolicy` per kind (`Default`, `MaxSize(ByteSize)`, `Off`),
@@ -355,3 +370,22 @@ NSH draws (`src/layers.rs`).
   handler with the error's text. The engine reports them through `MountSink::report`, whose default calls
   `MountSink::report_error` with the text, so the other platforms' text callbacks (`NshAppView.onError`,
   `NshView.ErrorListener`) are unchanged.
+
+## TestFlight uploads
+
+`nsh publish ios <IPA>` (`publish_ios.rs`) uploads a device IPA made by `nsh package` directly
+to App Store Connect's build uploads API. It reads the IPA's Info.plist, verifies the remote app's
+bundle ID, creates a build upload and file reservation, streams the prescribed ranges, and commits
+the SHA-256 checksum. Apple then processes the build; beta distribution and review remain in
+App Store Connect. The existing `.nshpkg` signing form of `publish` is preserved (`./ios` disambiguates
+an entry directory named `ios`).
+
+Credentials use flags or `NSH_APP_STORE_{APP_ID,ISSUER_ID,KEY_ID,PRIVATE_KEY}` environment variables,
+never project configuration. Each control request gets a two-minute ES256 JWT; delivery requests
+use only Apple's supplied headers. HTTP redirects are disabled, transfer errors omit signed URLs,
+and upload ranges must cover the file exactly. The CLI uses the existing ring dependency tree for
+P-256 signing, and existing ureq, base64, sha2, zip and plist crates.
+
+Unit tests verify JWT signatures and claims, request bodies, IPA metadata and range validation.
+A real upload requires a macOS machine, an App Store-signed IPA and an owner's App Store Connect
+team API key; local tests do not prove Apple's signing validation or TestFlight processing.

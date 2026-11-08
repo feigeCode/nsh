@@ -8,7 +8,7 @@ import { safeArea } from "nsh";
 import { Icon, type IconName } from "../icons";
 import { nav } from "../nav";
 import { TitleBar } from "../TitleBar";
-import { Appear, Badge, Button, Caption, Card, colors, DemoPage, finish, header, hint, IconTile, Inset, isDark, mono, PageHeader, Press, radius, Row, Segmented, tints, Toggle, type Tone, toneColor, toneTint } from "../ui";
+import { Appear, Badge, Button, Caption, Card, colors, DemoPage, finish, header, hint, IconTile, Inset, mono, PageHeader, Press, radius, Row, Segmented, tints, Toggle, type Tone, toneColor, toneTint } from "../ui";
 
 // One device pixel, in points (reading it in a binding follows the screen).
 const hairline = () => 1 / pixelRatio();
@@ -91,7 +91,6 @@ function LayoutAnimations() {
                 borderRadius: 14,
                 borderCurve: "continuous",
                 backgroundColor: toneTint(tileTones[n() % tileTones.length]),
-                boxShadow: isDark() ? "inset 0 1px 0 rgba(255,255,255,0.06)" : "inset 0 1px 0 #ffffff",
                 alignItems: "center",
                 justifyContent: "center",
               }}
@@ -118,15 +117,15 @@ function PressableSheet() {
         onPress={() => sheet.set(true)}
         role="button"
         style={{ boxShadow: finish.accent.boxShadow }}
-        class="h-12 flex-row items-center justify-center gap-2 rounded-[12px] bg-[#c8f26d] transition active:scale-[0.97] active:bg-[#a9d14f]"
+        class="h-12 flex-row items-center justify-center gap-2 rounded-[12px] bg-primary transition motion-reduce:transition-none active:scale-[0.97] active:opacity-85 focus:outline-2 focus:outline-ring"
       >
         <Text style={{ fontSize: 15, fontWeight: "600", color: colors.onAccent }}>Open a sheet</Text>
       </View>
-      <Caption label="Scales and darkens while pressed" note="active:scale-[0.97]" />
+      <Caption label="Scales and dims while pressed" note="active:scale-[0.97]" />
       <Sheet
         open={sheet()}
         onOpenChange={({ open }) => sheet.set(open)}
-        backdropStyle={{ backgroundColor: "rgba(0,0,0,0.5)" }}
+        backdropClass="bg-scrim"
         popupStyle={{
           gap: 16,
           padding: 20,
@@ -192,11 +191,17 @@ function PressFeedback() {
           <Badge label={disabled() ? "Off" : "On"} tone={disabled() ? "neutral" : "up"} />
         </Tile>
       </View>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: platform.idiom === "terminal" ? 24 : 12 }}>
         <View style={{ flex: 1 }}>
           <Caption label="Last pressed" note={last()} />
         </View>
-        <Toggle value={disabled()} onChange={(v) => disabled.set(v)} label="Disable the third tile" />
+        {/* The terminal's switch is a glyph: its label beside it says what it turns on. */}
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <If when={platform.idiom === "terminal"}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Disable</Text>
+          </If>
+          <Toggle value={disabled()} onChange={(v) => disabled.set(v)} label="Disable the third tile" />
+        </View>
       </View>
     </Card>
   );
@@ -283,7 +288,17 @@ function ModalOptions() {
       icon="system"
       title="Dialog options"
       subtitle="statusBarTranslucent, orientations"
-      right={<Toggle value={translucent()} onChange={(v) => translucent.set(v)} label="statusBarTranslucent" />}
+      right={
+          // The terminal's switch is a glyph: its label beside it says what it turns on.
+          platform.idiom === "terminal" ? (
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Text style={{ fontSize: 12, color: colors.muted }}>Translucent</Text>
+              <Toggle value={translucent()} onChange={(v) => translucent.set(v)} label="statusBarTranslucent" />
+            </View>
+          ) : (
+            <Toggle value={translucent()} onChange={(v) => translucent.set(v)} label="statusBarTranslucent" />
+          )
+        }
     >
       <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>
         Android: translucent content reaches under the status bar. iOS: this dialog allows portrait and landscape.
@@ -298,7 +313,7 @@ function ModalOptions() {
         onOpenChange={({ open }) => visible.set(open)}
         style={{ flex: 1 }}
       >
-        <View style={{ flex: 1, backgroundColor: isDark() ? "#16200d" : "#eef5dc" }}>
+        <View style={{ flex: 1, backgroundColor: colors.background }}>
           <TitleBar />
           <View
             style={{
@@ -332,7 +347,7 @@ function PlatformInfo() {
     ["platform.os", platform.os],
     ["platform.version", platform.version],
     ["platform.idiom / desktop / catalyst", `${platform.idiom} / ${platform.desktop} / ${platform.catalyst}`],
-    ["platform.select", platform.select({ ios: "ios branch", android: "android branch" }) ?? ""],
+    ["platform.select", platform.select({ ios: "ios branch", android: "android branch", default: "default branch" }) ?? ""],
     ["pixelRatio()", String(pixelRatio())],
     ["10.3 on whole pixels", String(Math.round(10.3 * pixelRatio()) / pixelRatio())],
     ["screenReaderEnabled()", String(screenReaderEnabled())],

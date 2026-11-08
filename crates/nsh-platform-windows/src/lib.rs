@@ -18,10 +18,7 @@
 //!
 //! [`AppView`] is one surface as a window (top-level or a child of the
 //! embedding app's window); [`run_app`] opens one and runs the message
-//! loop. A panel window ([`Panel`]) is another such view: a second window
-//! of the app on the same thread as its message loop (the one [`run_app`]
-//! creates), created in [`run_app_with`]'s setup and closed with the app.
-//! Off Windows this crate is empty.
+//! loop. Off Windows this crate is empty.
 
 #![cfg(windows)]
 
@@ -30,6 +27,8 @@ mod access;
 mod agent;
 mod animation;
 mod app;
+mod app_window;
+mod audio;
 mod canvas;
 mod chrome;
 mod compose;
@@ -41,18 +40,21 @@ mod file_requests;
 mod fps;
 mod geom;
 mod gfx;
+mod global_shortcut;
 mod image;
 mod input;
 mod keymap;
+mod linking;
 mod mount;
 mod native;
 mod navigation;
-mod panel;
+mod notifications;
 mod picker;
 mod render;
 mod scroll;
 mod selectable_view;
 mod shader;
+mod shell;
 mod surface;
 #[cfg(feature = "dev")]
 mod synth;
@@ -60,8 +62,11 @@ mod system;
 mod text;
 mod text_input;
 mod transition;
+mod tray;
 mod view;
 mod window;
+mod window_close;
+mod window_state;
 
 pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
@@ -73,10 +78,10 @@ pub use windows;
 pub use crate::app::set_root;
 pub use crate::{
     app::{
-        AppOptions, AppSource, AppView, debug_output, fatal_error, run_app, run_app_with,
+        AppOptions, AppSource, AppView, debug_output, fatal_error, run_app, set_components,
         set_ui_sets,
     },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent, Wheel},
-    panel::{Panel, PanelError, PanelOptions, WindowLevel},
+    text::DWriteTextEngine,
 };

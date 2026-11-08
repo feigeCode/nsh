@@ -54,12 +54,13 @@ mount(Browser);
 |---|---|---|---|
 | `src` | `string` | | 要显示的页面的 URL。 |
 | `html` | `string` | | 内联 HTML，代替 `src` 显示。 |
-| `baseUrl` | `string` | | `html` 中相对链接的解析基准。 |
+| `baseUrl` | `string` | | `html` 中相对链接的解析基准。它需要与该地址的页面相同的授权（`webview.hosts`）；未授权时 HTML 不带基准 URL 加载，`onError` 报告 `ERR_ACCESS_DENIED`。 |
 | `injectedJavaScript` | `string` | | 每个页面加载完成后运行。 |
 | `injectedJavaScriptBeforeContentLoaded` | `string` | | 在每个页面自身的脚本之前运行。 |
 | `userAgent` | `string` | 平台默认 | 用户代理字符串。 |
 | `scrollable` | `boolean` | `true` | 用户可以滚动页面。 |
 | `javaScriptEnabled` | `boolean` | `true` | 页面可以运行脚本。 |
+| `incognito` | `boolean` | `false` | 页面的网站数据（cookie、存储、缓存）只与网页视图同存亡，与应用的数据分开；Android 上网页视图加载时不使用 HTTP 缓存、不保存表单数据（见[网站数据](../docs/web-view-and-video.md#网站数据)）。在网页视图创建时读取。 |
 | `ios` | `{ allowsBackForwardNavigationGestures?: boolean }` | | 仅 iOS：从边缘轻扫以后退和前进。 |
 | `desktop` | `{ allowsBackForwardNavigationGestures?: boolean }` | | macOS：双指在触控板上轻扫以后退和前进；Windows：在触摸屏上轻扫；Linux：在触控板上轻扫。 |
 
@@ -93,6 +94,7 @@ interface WebViewNavigation {
 | `stopLoading()` | 停止加载。 |
 | `injectJavaScript(script)` | 在页面中运行 `script`。 |
 | `postMessage(data)` | 向页面发送 `data`（字符串）：在 `window` 上触发 `message` 事件，`event.data` 即为 `data`。 |
+| `load({ src, headers? })` | 加载 `src`，只给页面自身的请求带上 `headers`（`Record<string, string>`），子资源、之后的导航和重新加载都不带；用于已登录的页面（`Authorization`）。主机必须是 `webview.hosts` 允许的。请求头无效时抛出 `TypeError`。浏览器后端不做任何事。见[已登录的页面](../docs/web-view-and-video.md#已登录的页面请求头)。 |
 
 ## 与页面通信
 

@@ -9,8 +9,10 @@
 //! field), so a change sends only what changed.
 //! A region ([`crate::element::dynamic`], `If`, `Each`) is an effect queueing its
 //! new elements; the core reconciles that region's nodes alone, in place
-//! among its parent's other children. Patches and the events components emit
-//! are taken at the start of each commit round, until none is left.
+//! among its parent's other children. Reused nodes are diffed against the
+//! latest values their bindings applied, including when replaced by static
+//! elements. Patches and the events components emit are taken at the start
+//! of each commit round, until none is left.
 
 use std::{cell::RefCell, rc::Rc};
 
@@ -81,7 +83,7 @@ pub(super) struct BoundNode {
     pub(super) style: StyleRefinement,
     pub(super) classes: Classes,
     /// Its text's content and raw text node.
-    text: Option<(SharedString, NodeId)>,
+    pub(super) text: Option<(SharedString, NodeId)>,
 }
 
 /// A region of a parent's children.
@@ -248,12 +250,12 @@ impl<M: TextEngine> Core<M> {
     ) {
         inst.bound.insert(
             id,
-            BoundNode {
+            Box::new(BoundNode {
                 attrs: attrs.clone(),
                 style: style.clone(),
                 classes,
                 text,
-            },
+            }),
         );
     }
 
@@ -570,7 +572,7 @@ impl<M: TextEngine> Core<M> {
                     // An app's slot, or a node around a fill: what is not a
                     // style goes to its target (`super::slots`).
                     self.apply_slot_attrs(id, host, &attrs, &old, None);
-                } else if !self.apply_target_attrs(id, &attrs, &old) {
+                } else if !self.apply_target_attrs(id, &attrs, &old, app.as_ref()) {
                     self.apply_attrs_over(id, &attrs, &old, app.as_ref());
                 }
                 if let Some((style, classes, class)) = restyle {

@@ -58,12 +58,13 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 |---|---|---|---|---|
 | `src` | `web_view(url)` | `string` | | The URL of the page to show. |
 | `html` | `web_view_html(html, base_url)`, `.html(html, base_url)` | `string` | | Inline HTML, shown instead of `src`. |
-| `baseUrl` | `base_url` of `web_view_html` / `.html` | `string` | | What `html`'s relative links resolve against. |
+| `baseUrl` | `base_url` of `web_view_html` / `.html` | `string` | | What `html`'s relative links resolve against. It needs the same grant as a page there (`webview.hosts`); without it the HTML loads with no base URL and `onError` reports `ERR_ACCESS_DENIED`. |
 | `injectedJavaScript` | `.injected_java_script(..)` | `string` | | Runs after each page loads. |
 | `injectedJavaScriptBeforeContentLoaded` | `.injected_java_script_before_content(..)` | `string` | | Runs before each page's own scripts. |
 | `userAgent` | `.user_agent(..)` | `string` | | The browser's user agent string. |
 | `javaScriptEnabled` | `.java_script_enabled(..)` | `boolean` | `true` | Pages run scripts. |
 | `scrollable` | `.scrollable(..)` | `boolean` | `true` | The user can scroll the page. |
+| `incognito` | `.incognito(bool)` | `boolean` | `false` | The pages' website data (cookies, storage, the cache) lives only as long as the web view, apart from the app's; on Android the web view loads without the HTTP cache and saves no form data ([website data](../docs/web-view-and-video.md#website-data)). Read when the web view is made. |
 
 | `ios` key | Rust | Type | Description |
 |---|---|---|---|
@@ -79,12 +80,25 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | `WebViewNavigation` | A page started loading. |
 | `onLoad` | `.on_load` | `WebViewNavigation` | A page finished loading. |
-| `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a page or `html` the app's capabilities do not grant. |
+| `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a page, `html` or `baseUrl` the app's capabilities do not grant. |
 | `onNavigationStateChange` | `.on_navigation_state_change` | `WebViewNavigation` | The URL, title, loading state or history changed. |
 | `onMessage` | `.on_message` | `{ data: string }` (`&str`) | The page called `window.nsh.postMessage(data)`. |
+| `onDownload` | | `WebViewDownload` | A download started, finished or failed (macOS). |
 
 `WebViewNavigation` is `{ url, title, loading, canGoBack, canGoForward }`; in Rust `WebNavigation` with `url`, `title`,
 `loading`, `can_go_back` and `can_go_forward`.
+
+`WebViewDownload` is `{ state, id, url, filename, path, bytes?, message? }`: `state` is `"started"`, `"finished"`
+(with the file's `bytes`) or `"failed"` (with its `message`). With an `onDownload` listener, what the page downloads
+(an attachment, a type the web view does not show, a `download` link) is saved in the app's data directory as
+`downloads/<id>/<filename>`, where `path` points, and the app reads it with `fs/promises`.
+
+On macOS, adding the listener lets any loaded page allowed by the `webview` capability save downloads
+automatically. The app is responsible for its storage budget and for removing completed files from `downloads/`
+when it has finished using them. Removing the web view cancels downloads in progress and removes their partial
+directories. Downloads report through `onDownload`; converting a navigation into a download keeps `onError`
+for actual navigation failures. Filenames have control characters and bidirectional formatting controls removed,
+and long names are shortened to 200 bytes while preserving an extension that fits.
 
 ## Ref methods
 
@@ -95,6 +109,7 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 | `stopLoading()` | `stop_loading()` | Stops loading. |
 | `injectJavaScript(script)` | `inject_java_script(script)` | Runs JavaScript in the page. |
 | `postMessage(data)` | `post_message(data)` | Sends a string to the page, which receives a `message` event on `window`. |
+| `load({ src, headers })` | `load(WebLoad::new(src, headers)?)` | Loads `src` with `headers` (e.g. `Authorization`) on the page's own request only, not its subresources or later navigations ([guide](../docs/web-view-and-video.md#signed-in-pages-request-headers)). |
 
 ## Messaging
 
@@ -157,7 +172,8 @@ function Bridge() {
 
 When the app declares [capabilities](../docs/sandbox-and-capabilities.md) in `nsh.json`, a web view shows and
 navigates to the hosts listed under `webview`. A `src` on another host, or `html` in an app without `webview`, shows an
-empty view; a top-level navigation to another host (a link the user taps) is cancelled natively. Each reports
+empty view; a `baseUrl` on another host is dropped, and the HTML loads without it; a top-level navigation to another
+host (a link the user taps) is cancelled natively. Each reports
 `onError` with `code` `"ERR_ACCESS_DENIED"`.
 
 ```json
@@ -171,5 +187,6 @@ empty view; a top-level navigation to another host (a link the user taps) is can
 ## Platform notes
 
 - iOS loads WebKit the first time a web view is created, so it costs an app something only once it shows one.
+- On macOS `onDownload` saves downloads with WebKit's `WKDownload`.
 - On Android the page's `postMessage` calls arrive on a background thread and are forwarded to the app in order.
 - To round the corners of a web view, give it a corner radius and `overflow: "hidden"` (`.overflow_hidden()`).

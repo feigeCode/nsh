@@ -2,9 +2,10 @@
 //! expanded and selected states); a press selects a row and expands or
 //! collapses a folder; the tree is one stop of the keyboard focus whose
 //! arrows move the selection past disabled items (Right and Left expand,
-//! collapse, and go to the first child and the parent), Home and End go to
-//! the ends, Return and Space expand and collapse, letters select by
-//! typeahead; the state is the app's when it sets it; `revealItem`
+//! collapse, and go to the first child and the parent; they trade places
+//! in a right-to-left layout), Home and End go to the ends, Return and
+//! Space expand and collapse, letters select by typeahead; the state is
+//! the app's when it sets it; `revealItem`
 //! expands what is above an item; the keys act on the row a hidden
 //! selection is under, and the keyboard's focus shows on the first row
 //! while nothing is selected; screen readers' focus follows the keys;
@@ -132,6 +133,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         })
         .on_expand(move |id: &SharedString| push(format!("expand={id}")))
         .on_collapse(move |id: &SharedString| push(format!("collapse={id}")))
+        .on_action(move |id: &SharedString| push(format!("action={id}")))
         .component_ref(&r)
         .w(px(300.0))
         .h(px(400.0));
@@ -184,12 +186,18 @@ fn launch(root: Root) -> Headless {
 }
 
 fn launch_with(root: Root, screen_reader: bool) -> Headless {
+    launch_in(root, screen_reader, false)
+}
+
+/// [`launch_with`] in a right-to-left layout with `rtl`.
+fn launch_in(root: Root, screen_reader: bool, rtl: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(844.0)),
         ..EngineConfig::new(root)
     };
     config.environment.os = Os::MacOs;
     config.environment.screen_reader = screen_reader;
+    config.environment.rtl = rtl;
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
     app
@@ -201,6 +209,13 @@ fn start(props: HarnessProps) -> Headless {
 
 fn start_with(props: HarnessProps, screen_reader: bool) -> Headless {
     let mut app = launch_with(Root::new::<Harness>(move || props.clone()), screen_reader);
+    app.wait_for("role:treeitem[src]").unwrap();
+    app
+}
+
+/// [`start`] in a right-to-left layout.
+fn start_rtl(props: HarnessProps) -> Headless {
+    let mut app = launch_in(Root::new::<Harness>(move || props.clone()), false, true);
     app.wait_for("role:treeitem[src]").unwrap();
     app
 }
@@ -287,6 +302,12 @@ fn log(app: &Headless) -> String {
         .unwrap_or_default()
 }
 
+/// Longer than presses of a double press are apart (the headless driver's
+/// 500 ms, as the platforms'): the next press is a press of its own.
+fn single_press_pause(app: &mut Headless) {
+    app.wait(Duration::from_millis(600)).unwrap();
+}
+
 fn rows(app: &Headless) -> usize {
     app.screen().count("role:treeitem").unwrap()
 }
@@ -334,6 +355,8 @@ fn a_press_selects_a_row_and_expands_or_collapses_a_folder() {
         app.screen().accessibility_level("role:treeitem[guide.md]"),
         Ok(Some(2))
     );
+    // Another press later, not the second of a double press.
+    single_press_pause(&mut app);
     app.press("role:treeitem[docs]").unwrap();
     app.wait_for_gone("role:treeitem[guide.md]", Duration::from_secs(5))
         .unwrap();
@@ -416,6 +439,42 @@ fn right_expands_then_enters_and_left_collapses_then_leaves() {
 }
 
 #[test]
+fn right_to_left_left_expands_then_enters_and_right_collapses_then_leaves() {
+    let mut app = start_rtl(props());
+    enter(&mut app);
+    key(&mut app, "down");
+    key(&mut app, "down");
+    key(&mut app, "down");
+    see(&mut app, "selected:src/ui");
+    // The rows run from the right: Left expands, then goes to the first
+    // child.
+    key(&mut app, "left");
+    app.wait_for("role:treeitem[tree.rs]").unwrap();
+    see(&mut app, "selected:src/ui");
+    key(&mut app, "left");
+    see(&mut app, "selected:src/ui/tree.rs");
+    // Right goes to the parent, then collapses it.
+    key(&mut app, "right");
+    see(&mut app, "selected:src/ui");
+    key(&mut app, "right");
+    app.wait_for_gone("role:treeitem[tree.rs]", Duration::from_secs(5))
+        .unwrap();
+    // Up and Down keep theirs.
+    key(&mut app, "up");
+    see(&mut app, "selected:src/lib.rs");
+    key(&mut app, "down");
+    see(&mut app, "selected:src/ui");
+    // The direction changes while the tree has the focus: the keys follow.
+    app.set_environment("ltr", |env| env.rtl = false).unwrap();
+    key(&mut app, "right");
+    app.wait_for("role:treeitem[tree.rs]").unwrap();
+    key(&mut app, "left");
+    app.wait_for_gone("role:treeitem[tree.rs]", Duration::from_secs(5))
+        .unwrap();
+    see(&mut app, "selected:src/ui");
+}
+
+#[test]
 fn return_and_space_expand_and_collapse_the_selected_folder() {
     let mut app = start(props());
     enter(&mut app);
@@ -428,6 +487,90 @@ fn return_and_space_expand_and_collapse_the_selected_folder() {
     app.wait_for_gone("role:treeitem[guide.md]", Duration::from_secs(5))
         .unwrap();
     assert!(log(&app).ends_with("expand=docs expanded=src collapse=docs"));
+}
+
+#[test]
+fn return_acts_on_a_selected_leaf_and_not_on_a_folder() {
+    let mut app = start(props());
+    enter(&mut app);
+    key(&mut app, "down");
+    key(&mut app, "down");
+    see(&mut app, "selected:src/lib.rs");
+    key(&mut app, "enter");
+    app.wait_until("the action reported", Duration::from_secs(5), |s| {
+        s.texts()
+            .contains(&"log:selected=src selected=src/lib.rs action=src/lib.rs")
+    })
+    .unwrap();
+    // Space on a leaf does nothing.
+    key(&mut app, "space");
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(
+        log(&app),
+        "selected=src selected=src/lib.rs action=src/lib.rs"
+    );
+    // Return on a folder expands it, and does not act on it.
+    key(&mut app, "up");
+    see(&mut app, "selected:src");
+    key(&mut app, "enter");
+    app.wait_for_gone("role:treeitem[lib.rs]", Duration::from_secs(5))
+        .unwrap();
+    assert!(!log(&app).contains("action=src "));
+    assert!(log(&app).ends_with("collapse=src"));
+}
+
+#[test]
+fn a_double_press_acts_on_any_enabled_item_once() {
+    let mut app = start(props());
+    // A leaf: the first press selects it, the second acts on it.
+    app.press("role:treeitem[lib.rs]").unwrap();
+    app.press("role:treeitem[lib.rs]").unwrap();
+    app.wait_until("the action reported", Duration::from_secs(5), |s| {
+        s.texts()
+            .contains(&"log:selected=src/lib.rs action=src/lib.rs")
+    })
+    .unwrap();
+    // A third press of the same run acts no more.
+    app.press("role:treeitem[lib.rs]").unwrap();
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(log(&app), "selected=src/lib.rs action=src/lib.rs");
+    // A folder: each press expands or collapses it, the second acts on it
+    // after its own events.
+    single_press_pause(&mut app);
+    app.press("role:treeitem[docs]").unwrap();
+    app.press("role:treeitem[docs]").unwrap();
+    app.wait_until("the folder's action", Duration::from_secs(5), |s| {
+        s.texts().iter().any(|t| t.ends_with("action=docs"))
+    })
+    .unwrap();
+    assert!(log(&app).ends_with(
+        "selected=docs expanded=src,docs expand=docs expanded=src collapse=docs action=docs"
+    ));
+    // Single presses far apart never act.
+    single_press_pause(&mut app);
+    app.press("role:treeitem[README.md]").unwrap();
+    single_press_pause(&mut app);
+    app.press("role:treeitem[README.md]").unwrap();
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert!(log(&app).ends_with("collapse=docs action=docs selected=README.md"));
+}
+
+#[test]
+fn disabled_items_and_a_disabled_tree_never_act() {
+    let mut app = start(props());
+    // A disabled item takes no press, double or single.
+    assert!(app.press("role:treeitem[vendor]").is_err());
+    assert!(app.press("role:treeitem[vendor]").is_err());
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(log(&app), "");
+    // A disabled tree: no press, no key.
+    key(&mut app, "f7");
+    assert!(app.press("role:treeitem[lib.rs]").is_err());
+    assert!(app.press("role:treeitem[lib.rs]").is_err());
+    enter(&mut app);
+    key(&mut app, "enter");
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert!(!log(&app).contains("action="));
 }
 
 #[test]
@@ -629,6 +772,16 @@ fn with_nothing_selected_the_focus_shows_on_the_first_row() {
 }
 
 #[test]
+fn with_nothing_selected_right_acts_on_the_row_the_focus_shows_on() {
+    let mut app = start(props());
+    enter(&mut app);
+    // The focus shows on `src`, expanded: Right goes to its first child
+    // at once, as it would with `src` selected.
+    key(&mut app, "right");
+    see(&mut app, "selected:src/lib.rs");
+}
+
+#[test]
 fn the_screen_readers_focus_follows_the_keys() {
     let mut app = start_with(props(), true);
     enter(&mut app);
@@ -707,8 +860,9 @@ fn an_id_given_twice_expands_its_first_item_once() {
     });
     app.press("role:treeitem[second]").unwrap();
     app.wait_for("role:treeitem[a]").unwrap();
-    // Again: `x` is expanded already, nothing to report (it was pushed
-    // again on each press).
+    // Again (later: not a double press): `x` is expanded already, nothing
+    // to report (it was pushed again on each press).
+    single_press_pause(&mut app);
     app.press("role:treeitem[second]").unwrap();
     app.wait(Duration::from_millis(50)).unwrap();
     assert_eq!(log(&app), "selected=x expanded=src,x expand=x");

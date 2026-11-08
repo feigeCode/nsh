@@ -3,8 +3,10 @@
 
 mod accordion;
 mod avatar;
+mod button;
 mod calendar;
 mod carousel;
+mod checkbox;
 mod collapsible;
 mod color_picker;
 mod combobox;
@@ -34,7 +36,10 @@ mod scrollbar;
 mod select;
 mod sheet;
 mod slider;
+mod submenu;
+mod switch;
 mod tabs;
+mod terminal;
 mod text_view;
 mod time_field;
 mod toggle;

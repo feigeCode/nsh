@@ -1,13 +1,14 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
-import { Combobox, type OpenChangeReason, type SelectGroup, type SelectItemState } from "nsh/base";
-import { button, CheckMark, desktop, Icon, Log, Panel, size, Split, tint, ui } from "./palette";
+import { Combobox, type OpenChangeReason } from "nsh/base";
+import { desktop, Log, Panel, size, Split, ui, sectionSurface, clearButtonLook, ComboToggle, comboboxLook, ListboxEmpty, listboxFooter, ListboxHeader, listboxProps, OptionRow } from "./palette";
 
 // Two comboboxes in a card: labels for an issue, several picked in one go
 // from a searchable list with sections, a clear button and a footer; and
-// an assignee, one person replacing the last. The trigger is the shared
-// button look with what is selected and a chevron that turns while the
-// list is open; the list is a popup at the trigger with a pointer, a sheet
-// on a touch screen. Selected rows show a check in its own lane.
+// an assignee, one person replacing the last. The look is the shared
+// listbox look: the field (`comboboxLook`) is the well the input types in,
+// its toggle (`ComboToggle`) a chevron that turns while the list is open;
+// the list (`listboxProps`) a popup at the trigger with a pointer, a sheet
+// on a touch screen; chosen rows show a check in its own lane.
 
 const LABELS = [
   { value: "bug", title: "Bug", group: "Type" },
@@ -32,86 +33,6 @@ const PEOPLE = [
 
 const titlesOf = (items: { value: string; title: string }[], values: string[]) =>
   values.map((v) => items.find((i) => i.value === v)?.title ?? v);
-
-/** The text of a control: 13 with a pointer, the touch label size otherwise. */
-const controlText = desktop ? 13 : size.label;
-
-/** A popup at the trigger with a pointer, a sheet at the bottom on a touch screen. */
-const surface = () =>
-  desktop
-    ? { ...ui().card, borderRadius: 12, padding: 4 }
-    : { ...ui().card, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 30, maxHeight: "70%" as const };
-
-const backdrop = { backgroundColor: "rgba(0,0,0,0.45)" };
-
-/** The trigger: the shared button's look, what is selected at the start and a chevron in a lane as wide as it. */
-function Trigger(props: { title?: string; placeholder: string; open: boolean; clearable?: boolean }) {
-  const look = button("secondary", {
-    style: () => ({
-      flexDirection: "row",
-      justifyContent: "space-between",
-      gap: 8,
-      ...(desktop ? { width: 260 } : {}),
-      ...(props.open ? { borderColor: ui().faint } : {}),
-    }),
-  });
-  return (
-    <View {...look}>
-      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().muted }}>
-        {props.title ?? props.placeholder}
-      </Text>
-      {/* With a clear button over the end (`cleanable`), an empty lane as wide as the button in place of the chevron. */}
-      <View
-        class="transition-transform duration-150 motion-reduce:transition-none"
-        style={{
-          width: props.clearable ? 20 : 10,
-          height: 20,
-          alignItems: "center",
-          justifyContent: "center",
-          opacity: props.clearable ? 0 : 1,
-          transform: [{ rotate: props.open ? "270deg" : "90deg" }],
-        }}
-      >
-        <Text style={{ fontSize: 18, color: ui().muted }}>›</Text>
-      </View>
-    </View>
-  );
-}
-
-/** A row: the title, the check in its own lane. */
-function Row(props: { item: SelectItemState }) {
-  return (
-    <View
-      style={{
-        height: size.rowSm,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        paddingHorizontal: 8,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: "transparent",
-        opacity: props.item.disabled ? 0.4 : 1,
-        ...(props.item.highlighted ? { backgroundColor: tint(ui().accent, 0.08), borderColor: tint(ui().accent, 0.24) } : {}),
-      }}
-    >
-      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: ui().text }}>{props.item.title}</Text>
-      <View style={{ width: 16 }}>
-        <If when={props.item.selected}>
-          <CheckMark size={16} tint={ui().accent} />
-        </If>
-      </View>
-    </View>
-  );
-}
-
-function Header(props: { group: SelectGroup }) {
-  return (
-    <Text style={{ fontSize: 12, fontWeight: "500", color: ui().muted, paddingHorizontal: 9, paddingTop: 8, paddingBottom: 4 }}>
-      {props.group.title}
-    </Text>
-  );
-}
 
 /** A label over its control, a quieter line under the label. */
 function Field(props: { label: string; detail: string; children: JSX.Element }) {
@@ -157,7 +78,7 @@ function App() {
           </>
         }
       >
-        <View style={{ ...ui().card, borderRadius: 16, padding: 16, gap: 20 }}>
+        <View style={{ ...sectionSurface({ padded: true }), gap: 20 }}>
           <Field label="Labels" detail="Several at once, with search and sections">
             <Combobox
               items={LABELS}
@@ -170,31 +91,18 @@ function App() {
               onConfirm={({ value }) => log(`Confirmed ${value.length} labels`)}
               onOpenChange={opened((next) => labelsOpen.set(next))}
               accessibilityLabel="Labels"
-              searchable
-              searchPlaceholder="Filter labels"
-              searchClass={`${desktop ? "text-sm" : "text-base"} placeholder:text-[${ui().faint}] text-[${ui().text}]`}
-              searchStyle={{ ...ui().inset, borderRadius: 8, height: size.control, paddingHorizontal: 8, marginBottom: 4 }}
-              empty={<Text style={{ paddingVertical: 20, textAlign: "center", fontSize: 13, color: ui().muted }}>No label matches</Text>}
-              offset={4}
-              margin={8}
-              popupStyle={surface()}
-              backdropStyle={backdrop}
-              itemClass="active:opacity-70"
-              style={desktop ? { width: 260 } : undefined}
+              {...comboboxLook(() => labelsOpen(), { filled: () => labels().length > 0 })}
+              placeholder={labelTitle() ?? "Add labels"}
+              triggerButton={<ComboToggle open={labelsOpen()} />}
+              empty={<ListboxEmpty label="No label matches" />}
+              {...listboxProps()}
               cleanable
               clearButtonAccessibilityLabel="Clear the labels"
-              clearButtonClass="absolute items-center justify-center rounded-full enabled:hover:opacity-70"
-              clearButtonStyle={{ top: (size.control - 20) / 2, right: 10, width: 20, height: 20 }}
-              clearButton={<Icon name="close" size={14} tint={ui().muted} />}
-              footerStyle={{ borderTopWidth: 1, borderColor: ui().border, marginTop: 4, paddingTop: 4 }}
-              footer={
-                <View style={{ paddingHorizontal: 8, paddingVertical: 6 }}>
-                  <Text style={{ fontSize: 12, color: ui().muted }}>{`${labels().length} selected`}</Text>
-                </View>
-              }
-              trigger={<Trigger title={labelTitle()} placeholder="Add labels" open={labelsOpen()} clearable={labels().length > 0} />}
-              renderItem={(item) => <Row item={item} />}
-              renderGroup={(group) => <Header group={group} />}
+              {...clearButtonLook()}
+              footerStyle={listboxFooter.style}
+              footer={<Text style={listboxFooter.text}>{`${labels().length} selected`}</Text>}
+              renderItem={(item) => <OptionRow item={item} />}
+              renderGroup={(group) => <ListboxHeader group={group} />}
             />
           </Field>
           <Field label="Assignee" detail="One person: a choice replaces the last">
@@ -207,13 +115,11 @@ function App() {
               }}
               onOpenChange={opened((next) => assigneeOpen.set(next))}
               accessibilityLabel="Assignee"
-              offset={4}
-              margin={8}
-              popupStyle={surface()}
-              backdropStyle={backdrop}
-              itemClass="active:opacity-70"
-              trigger={<Trigger title={titlesOf(PEOPLE, assignee())[0]} placeholder="Assign someone" open={assigneeOpen()} />}
-              renderItem={(item) => <Row item={item} />}
+              {...listboxProps()}
+              {...comboboxLook(() => assigneeOpen())}
+              placeholder="Assign someone"
+              triggerButton={<ComboToggle open={assigneeOpen()} />}
+              renderItem={(item) => <OptionRow item={item} />}
             />
           </Field>
         </View>

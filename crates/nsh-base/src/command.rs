@@ -172,7 +172,7 @@ impl CommandEntry {
         let shortcut_label = item.shortcut.as_deref().and_then(|keys| {
             let apple = apple_keys();
             match Keystroke::parse_with(keys, apple) {
-                Ok(k) => Some(SharedString::from(k.label(os(), apple))),
+                Ok(k) => Some(SharedString::from(keystroke_label(k))),
                 Err(e) => {
                     log::warn!("Command: the shortcut of `{}`: {e}", item.id);
                     None
@@ -453,8 +453,12 @@ pub struct CommandProps {
     /// by `separatorClass`: never first, last or doubled.
     #[prop(default = true)]
     pub separator: Prop<bool>,
-    /// What screen readers call the search field and the list.
+    /// What screen readers call the list, and the search field while
+    /// `searchAccessibilityLabel` is not set.
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// What screen readers call the search field (default
+    /// `accessibilityLabel`): what it searches, apart from the list's name.
+    pub search_accessibility_label: Prop<Option<SharedString>>,
     /// The classes of the search bar: the row of `searchPrefix`, the
     /// search field and `searchSuffix`.
     pub search_bar_class: Prop<Option<SharedString>>,
@@ -929,7 +933,15 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
             When::NotEditing
         };
         let bind = |keys: &str, when: When, repeat: bool, f: Rc<dyn Fn()>| {
-            on_key_with(keys, KeyOptions { when, repeat }, move |_| f());
+            on_key_with(
+                keys,
+                KeyOptions {
+                    when,
+                    repeat,
+                    ..Default::default()
+                },
+                move |_| f(),
+            );
         };
         let moves = [
             ("up", Move::Previous, when),
@@ -984,6 +996,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
             KeyOptions {
                 when: When::Always,
                 repeat: false,
+                ..Default::default()
             },
             move |_| {
                 let has_query = props.searchable.get_untracked()
@@ -1043,7 +1056,12 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
                         // A touch keyboard's return key chooses and keeps
                         // the field for the next query.
                         .submit_behavior(SubmitBehavior::Submit)
-                        .optional_label(props.accessibility_label)
+                        .optional_label(move || {
+                            props
+                                .search_accessibility_label
+                                .get()
+                                .or_else(|| props.accessibility_label.get())
+                        })
                         .app_class(props.search_class)
                         .inline_style(move || props.search_style.get())
                         .on_focus(move || field_focused.set(true))
@@ -1053,6 +1071,13 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
                 )
                 .child(props.search_suffix.place(|e| e))
         },
+    );
+    // A terminal draws a rule under the field: the GUI's border under the
+    // search bar is no Cell there, and the query would run into the
+    // first row.
+    let rule = when(
+        move || crate::terminal::is_terminal() && props.searchable.get(),
+        crate::terminal::rule_line,
     );
     // The field went: its focus too.
     effect(move || {
@@ -1108,6 +1133,7 @@ pub fn Command(props: CommandProps, cx: Scope<CommandEvent>) -> impl IntoElement
         .on_blur(move || root_focused.set(false))
         .child(props.header.place(|e| e))
         .child(search)
+        .child(rule)
         .child(list)
         .child(empty)
         .child(props.footer.place(|e| e))
@@ -1206,8 +1232,13 @@ fn item_row(p: Palette, entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
         })
         .project_focused(highlighted)
         .project_checked(checked)
-        .app_class(parts.item_class)
-        .inline_style(move || parts.item_style.get())
+        // A terminal marks the highlighted row itself (a band over the
+        // whole row, `crate::terminal`): the app's row look would paint
+        // a band of its own beside it. Its content (`render_item`) stays.
+        .when(!crate::terminal::is_terminal(), |v| {
+            v.app_class(parts.item_class)
+                .inline_style(move || parts.item_style.get())
+        })
         .element_ref(&me)
         // The pointer highlights a row, as long as no button is down.
         .on_mouse_move(move |e: &MouseEvent| {

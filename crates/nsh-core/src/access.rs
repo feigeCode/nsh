@@ -2,11 +2,10 @@
 //!
 //! An app declares them in `nsh.json` (`"capabilities"`); the app embedding
 //! nsh may grant less ([`Access`]): a request must be allowed by both.
-//! Everything is denied unless listed, and unknown keys are errors, so a
-//! typo is caught at build time rather than becoming a missing grant.
-//! Signed packages are read leniently ([`Capabilities::from_json_lenient`]):
-//! a newer signer may declare what this runtime does not know, which is
-//! then not granted.
+//! Everything is denied unless listed. `nsh.json` and signed packages are
+//! read leniently ([`Capabilities::from_json_lenient`]): a newer NSH may
+//! declare what this one does not know, which is then not granted (the
+//! toolchain warns of it, so a typo is still seen at build time).
 //!
 //! ```json
 //! "capabilities": {
@@ -15,7 +14,7 @@
 //!     "http": [{ "host": "quotes.example.com", "methods": ["GET"], "pathPrefix": "/v1/" }],
 //!     "sockets": ["mqtt.example.com:8883"]
 //!   },
-//!   "webview": { "hosts": ["*.example.com"] },
+//!   "webview": { "hosts": ["*.example.com"], "input": true },
 //!   "statusBar": true,
 //!   "host": ["getUserInfo", "bridge.*"],
 //!   "openUrl": { "schemes": ["https", "mailto"] }
@@ -33,14 +32,17 @@
 //! `network.sockets` grants raw TCP (`net.connect`) to exact `host:port`
 //! pairs only: no wildcards, and neither `hosts` nor `http` grants imply
 //! one. `webview` lists the hosts a web view may show and navigate to (its
-//! pages' own subresources are the web content's business). `host` lists
+//! pages' own subresources are the web content's business); its `input`
+//! lets a web view's ref give the page trusted input (`sendInput`), which
+//! carries user activation and is granted only when declared, also for
+//! apps without a declaration. `host` lists
 //! the functions of the embedding app `nsh/host` may call: names (1 to 128
 //! of `[A-Za-z0-9_.:-]`, without `..`; the core refuses calls of any other
 //! name), or prefixes of them ending in `*` (`true`: all of them); the
 //! host's events need no grant, the host sends them. An app without
 //! `"capabilities"` (a standalone app, its developer's own) retains
-//! unrestricted HTTP, web views, the status bar, the clipboard, the picker
-//! and opening URLs; raw sockets, processes, the filesystem and the host's
+//! unrestricted HTTP, web views, the status bar, the clipboard, the picker,
+//! speech recognition and opening URLs; raw sockets, processes, the filesystem and the host's
 //! functions always require an explicit declaration.
 
 //! A `network.http` rule names a `host` (a pattern, as in `hosts`); every
@@ -94,6 +96,11 @@ impl HostPattern {
     /// The pattern as written (lower case).
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether it is `*`, which covers every host.
+    fn is_any(&self) -> bool {
+        self.0 == "*"
     }
 }
 
@@ -153,6 +160,18 @@ impl HttpGrant {
                         tail.is_empty() || prefix.ends_with('/') || tail.starts_with('/')
                     })
                 }))
+    }
+
+    /// Whether it grants `method` on every host, port and path of `scheme`:
+    /// all a URL that parsers read differently can be held to.
+    fn allows_anywhere(&self, method: &str, scheme: &str) -> bool {
+        self.host.is_any()
+            && (self.methods.is_empty()
+                || self.methods.iter().any(|m| m.eq_ignore_ascii_case(method)))
+            && (self.schemes.is_empty() || self.schemes.iter().any(|s| s == scheme))
+            && self.port.is_none()
+            && self.paths.is_empty()
+            && self.path_prefixes.is_empty()
     }
 }
 
@@ -354,6 +373,9 @@ pub struct Capabilities {
     pub network: NetworkGrants,
     /// The hosts web views may show; `None`: no web views.
     pub webview: Option<Vec<HostPattern>>,
+    /// Web views may take trusted input (`sendInput`, `webview.input`):
+    /// never without a declaration ([`Capabilities::all`] leaves it off).
+    pub webview_input: bool,
     /// The app may set the status bar.
     pub status_bar: bool,
     /// The app may read and write the system clipboard (`nsh/clipboard`).
@@ -361,6 +383,15 @@ pub struct Capabilities {
     /// The app may show the system's picker (`nsh/picker`): the files the
     /// user picks in it reach the app.
     pub picker: bool,
+    /// The app may recognize the user's speech (`Speech` of `nsh`): the
+    /// microphone listens while a session runs, and the transcript reaches
+    /// the app.
+    pub speech: bool,
+    /// The app may show notifications and set its badge (`Notifications` of
+    /// `nsh`). The user's permission is the system's, on top of this.
+    pub notifications: bool,
+    /// The app may play sound (`Sound` and `AudioPlayer` of `nsh`).
+    pub audio: bool,
     /// The functions of the embedding app `nsh/host` may call: names, or
     /// prefixes ending in `*` (`"*"`: all); empty: none, also for apps
     /// without a declaration ([`Capabilities::all`]).
@@ -368,6 +399,41 @@ pub struct Capabilities {
     /// The URLs the app may open outside it (`openUrl` of `nsh/device`);
     /// `None`: none.
     pub open_url: Option<OpenUrlGrant>,
+    /// The windows the app may open and what they may do (`nsh/desktop`'s
+    /// `Window`); `None`: none besides its main one.
+    pub windows: Option<WindowsGrant>,
+}
+
+/// The windows an app may open (`capabilities.windows`). Overlays,
+/// click-through windows and capture protection, which can pass for the
+/// system's UI over other apps, are granted only when declared.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct WindowsGrant {
+    /// The kinds it may open; empty: every kind but `overlay`, which needs
+    /// [`Self::overlay`] as well.
+    pub kinds: Vec<crate::desktop::WindowKind>,
+    /// The levels its windows may float at; empty: every level.
+    pub levels: Vec<crate::desktop::WindowLevel>,
+    /// How many windows it may have open at once besides the main one;
+    /// `None`: any number.
+    pub max: Option<u32>,
+    /// Overlays and click-through windows (`pointerEvents: "none"`).
+    pub overlay: bool,
+}
+
+impl WindowsGrant {
+    fn allows_kind(&self, kind: crate::desktop::WindowKind) -> bool {
+        use crate::desktop::WindowKind;
+        if kind == WindowKind::Overlay && !self.overlay {
+            return false;
+        }
+        self.kinds.is_empty() || self.kinds.contains(&kind)
+    }
+
+    fn allows_level(&self, level: crate::desktop::WindowLevel) -> bool {
+        self.levels.is_empty() || self.levels.contains(&level)
+    }
 }
 
 /// Which URLs an app may open outside it (`capabilities.openUrl`).
@@ -400,27 +466,76 @@ pub struct UrlParts<'a> {
 }
 
 /// Splits an absolute URL into scheme, host and path; `None` when it has no
-/// `scheme://host`.
+/// `scheme://host`, or when URL parsers would read it differently: a
+/// backslash before the query, an ASCII control character, or a host with
+/// percent-encoding or a forbidden host code point.
 pub fn parse_url(url: &str) -> Option<UrlParts<'_>> {
-    let (scheme, rest) = url.split_once("://")?;
+    read_url(url).ok()
+}
+
+/// What a refusal of `url` advises: the host to add to
+/// `capabilities.{capability}`, or, for a URL without parts, how to write
+/// it, since adding the URL itself would never grant it.
+pub(crate) fn grant_advice(url: &str, capability: &str) -> String {
+    match parse_url(url) {
+        Some(parts) => format!(
+            "add `{}` to capabilities.{capability} in nsh.json",
+            parts.host
+        ),
+        None => NO_HOST_ADVICE.to_owned(),
+    }
+}
+
+/// [`grant_advice`] for a URL without parts.
+const NO_HOST_ADVICE: &str = "it names no host a grant could add: write it as an http(s) URL with a host, a backslash as `%5C` and no control characters";
+
+/// Why [`read_url`] gives no parts.
+enum Unread {
+    /// No `scheme://host`.
+    NotUrl,
+    /// A URL parsers read as different hosts, ports or paths, with its
+    /// lower-case scheme: only a grant of every host covers it.
+    Ambiguous(String),
+}
+
+/// [`parse_url`], saying why a string has no parts.
+fn read_url(url: &str) -> Result<UrlParts<'_>, Unread> {
+    let (scheme, rest) = url.split_once("://").ok_or(Unread::NotUrl)?;
     if scheme.is_empty()
         || !scheme
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
     {
-        return None;
+        return Err(Unread::NotUrl);
+    }
+    let scheme = scheme.to_ascii_lowercase();
+    // WHATWG's parser (the web views') ends the host at a backslash and reads
+    // one in the path as `/`, and it drops tab, LF and CR; Foundation's
+    // `NSURL` (native media loads) keeps a backslash in the user info. Before
+    // the query, one could name a host or path here other than the one that
+    // loads; in the query no parser reads it as a host or path.
+    let head = url.split(['?', '#']).next().unwrap_or(url);
+    if head.contains('\\') || url.bytes().any(|b| b.is_ascii_control()) {
+        return Err(Unread::Ambiguous(scheme));
     }
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let (authority, path) = rest.split_at(end);
     // User info ends at the last `@`: `https://good.com@evil.com/` is evil.com.
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = if let Some(v6) = host_port.strip_prefix('[') {
-        format!("[{}]", v6.split_once(']')?.0)
+        format!("[{}]", v6.split_once(']').ok_or(Unread::NotUrl)?.0)
     } else {
         host_port.split(':').next().unwrap_or_default().to_owned()
     };
     if host.is_empty() {
-        return None;
+        return Err(Unread::NotUrl);
+    }
+    // WHATWG's parser decodes a host's percent-encoding and refuses its
+    // forbidden host code points: a host with either is not the one granted.
+    if host.contains(['%', ' ', '<', '>', '^', '|'])
+        || (!host_port.starts_with('[') && host.contains(['[', ']']))
+    {
+        return Err(Unread::Ambiguous(scheme));
     }
     let port = if host_port.starts_with('[') {
         host_port
@@ -428,16 +543,15 @@ pub fn parse_url(url: &str) -> Option<UrlParts<'_>> {
             .and_then(|(_, rest)| rest.strip_prefix(':'))
             .map(str::parse::<u16>)
             .transpose()
-            .ok()?
     } else {
         host_port
             .split_once(':')
             .map(|(_, port)| port.parse::<u16>())
             .transpose()
-            .ok()?
-    };
-    Some(UrlParts {
-        scheme: scheme.to_ascii_lowercase(),
+    }
+    .map_err(|_| Unread::NotUrl)?;
+    Ok(UrlParts {
+        scheme,
         host: host.to_ascii_lowercase().trim_end_matches('.').to_owned(),
         path: if path.is_empty() { "/" } else { path },
         port,
@@ -460,39 +574,73 @@ impl Capabilities {
             status_bar: true,
             clipboard: true,
             picker: true,
+            speech: true,
+            notifications: true,
+            audio: true,
             open_url: Some(OpenUrlGrant::default()),
+            // Every kind and level, but no overlays or capture protection.
+            windows: Some(WindowsGrant::default()),
             // The host's functions are never granted without a declaration.
             ..Self::default()
         }
     }
 
-    /// Parses `capabilities` from `nsh.json` (or a grant in the same form).
-    /// Unknown keys are errors: a typo is caught when the app is built.
+    /// Parses `capabilities` strictly: unknown keys are errors. What NSH
+    /// itself reads (`nsh.json`, bundles, packages, grants) goes through
+    /// [`Capabilities::from_json_lenient`], which a newer NSH's keys do not
+    /// break.
     pub fn from_json(value: &Value) -> Result<Self, String> {
         Self::parse(value, None)
     }
 
-    /// Parses the capabilities a signed package declares, which a newer
-    /// signer may have written: unknown keys never grant anything. An
-    /// unknown capability is not granted; an unknown key inside one (a
-    /// restriction this runtime cannot apply) drops what it is in, the
-    /// whole capability or the `http` grant. Returns what was dropped
-    /// (`capabilities.bluetooth`, ...) with the capabilities.
+    /// Parses capabilities a newer NSH may have written (`nsh.json`,
+    /// bundles, signed packages, grants): what it cannot read never grants
+    /// anything. An unknown capability is not granted; an unknown key inside
+    /// one (a restriction this runtime cannot apply) drops what it is in,
+    /// the whole capability or the `http` grant; a value of a form it does
+    /// not know drops its capability (or its `http` grant), and the others
+    /// stay. Declared capabilities allow only what they list, so what is
+    /// dropped is denied. Only a declaration that is no object is denied
+    /// whole. Returns what was dropped (`capabilities.bluetooth`, ...) with
+    /// the capabilities.
     pub fn from_json_lenient(value: &Value) -> Result<(Self, Vec<String>), String> {
         let mut dropped = Vec::new();
-        let caps = Self::parse(value, Some(&mut dropped))?;
+        let Value::Object(obj) = value else {
+            dropped.push(format!(
+                "capabilities ({value} is not an object): all of them"
+            ));
+            return Ok((Self::default(), dropped));
+        };
+        // Each capability on its own: one that fails is dropped, alone.
+        let mut readable = Map::new();
+        for (key, v) in obj {
+            let one = Value::Object(Map::from_iter([(key.clone(), v.clone())]));
+            let mut its_dropped = Vec::new();
+            match Self::parse(&one, Some(&mut its_dropped)) {
+                Ok(_) => {
+                    dropped.append(&mut its_dropped);
+                    readable.insert(key.clone(), v.clone());
+                }
+                Err(e) => dropped.push(format!("capabilities.{key} ({e})")),
+            }
+        }
+        let caps = Self::parse(&Value::Object(readable), Some(&mut Vec::new()))?;
         Ok((caps, dropped))
     }
 
     /// `dropped`: lenient, recording what unknown keys dropped; `None`:
     /// strict.
     fn parse(value: &Value, mut dropped: Option<&mut Vec<String>>) -> Result<Self, String> {
-        const KNOWN: [&str; 9] = [
+        const KNOWN: [&str; 13] = [
+            "windows",
             "network",
             "webview",
             "statusBar",
             "clipboard",
             "picker",
+            "speech",
+            "notifications",
+            "audio",
             "openUrl",
             "process",
             "fs",
@@ -506,6 +654,10 @@ impl Capabilities {
                 None => return Err(unknown_key("capabilities", key, &KNOWN)),
             }
         }
+        let lenient = dropped.is_some();
+        // The `http` grants dropped, recorded once `check` is done with
+        // `dropped`.
+        let mut http_dropped = Vec::new();
         // Whether `obj` (`what`) has only `keys`; lenient, an unknown key
         // drops `name` (what it is in): recorded, and `false` returned.
         let mut check = |obj: &Map<String, Value>,
@@ -547,11 +699,9 @@ impl Capabilities {
                         .as_array()
                         .ok_or("capabilities.network.http must be an array")?;
                     for (i, grant) in list.iter().enumerate() {
-                        let g = object(grant, "capabilities.network.http[]")?;
-                        if check(
-                            g,
-                            "capabilities.network.http[]",
-                            &[
+                        let name = format!("capabilities.network.http[{i}]");
+                        let parsed = object(grant, "capabilities.network.http[]").and_then(|g| {
+                            let keys = [
                                 "host",
                                 "methods",
                                 "scheme",
@@ -561,10 +711,21 @@ impl Capabilities {
                                 "pathPrefix",
                                 "pathPrefixes",
                                 "path_prefixes",
-                            ],
-                            &format!("capabilities.network.http[{i}]"),
-                        )? {
-                            caps.network.http.push(http_grant(g)?);
+                            ];
+                            Ok(
+                                match check(g, "capabilities.network.http[]", &keys, &name)? {
+                                    true => Some(http_grant(g)?),
+                                    false => None,
+                                },
+                            )
+                        });
+                        match parsed {
+                            Ok(Some(grant)) => caps.network.http.push(grant),
+                            Ok(None) => {}
+                            // Lenient: a grant of a form this runtime does
+                            // not know is dropped alone.
+                            Err(e) if lenient => http_dropped.push(format!("{name} ({e})")),
+                            Err(e) => return Err(e),
                         }
                     }
                 }
@@ -575,13 +736,18 @@ impl Capabilities {
             if check(
                 webview,
                 "capabilities.webview",
-                &["hosts"],
+                &["hosts", "input"],
                 "capabilities.webview",
             )? {
                 caps.webview = Some(match webview.get("hosts") {
                     Some(hosts) => patterns(hosts, "capabilities.webview.hosts")?,
                     None => Vec::new(),
                 });
+                if let Some(input) = webview.get("input") {
+                    caps.webview_input = input
+                        .as_bool()
+                        .ok_or("capabilities.webview.input must be a boolean")?;
+                }
             }
         }
         if let Some(status_bar) = obj.get("statusBar") {
@@ -598,6 +764,21 @@ impl Capabilities {
             caps.picker = picker
                 .as_bool()
                 .ok_or("capabilities.picker must be a boolean")?;
+        }
+        if let Some(speech) = obj.get("speech") {
+            caps.speech = speech
+                .as_bool()
+                .ok_or("capabilities.speech must be a boolean")?;
+        }
+        if let Some(notifications) = obj.get("notifications") {
+            caps.notifications = notifications
+                .as_bool()
+                .ok_or("capabilities.notifications must be a boolean")?;
+        }
+        if let Some(audio) = obj.get("audio") {
+            caps.audio = audio
+                .as_bool()
+                .ok_or("capabilities.audio must be a boolean")?;
         }
         if let Some(open_url) = obj.get("openUrl") {
             match open_url {
@@ -687,6 +868,27 @@ impl Capabilities {
                 }
             }
         }
+        if let Some(windows) = obj.get("windows") {
+            match windows {
+                Value::Bool(granted) => caps.windows = granted.then(WindowsGrant::default),
+                Value::Object(grant) => {
+                    if check(
+                        grant,
+                        "capabilities.windows",
+                        &["kinds", "levels", "max", "overlay"],
+                        "capabilities.windows",
+                    )? {
+                        caps.windows = Some(windows_grant(grant)?);
+                    }
+                }
+                _ => {
+                    return Err(
+                        "capabilities.windows must be a boolean or an object of `kinds`, `levels`, `max` and `overlay`"
+                            .into(),
+                    );
+                }
+            }
+        }
         if let Some(host) = obj.get("host") {
             caps.host = match host {
                 Value::Bool(all) => {
@@ -711,11 +913,50 @@ impl Capabilities {
                 }
             };
         }
+        if let Some(dropped) = dropped {
+            dropped.append(&mut http_dropped);
+        }
         Ok(caps)
     }
 
     /// The JSON form [`Capabilities::from_json`] reads.
     pub fn to_json(&self) -> Value {
+        let mut obj = self.to_json_without_windows();
+        // Only when granted: older runtimes read what newer signers write.
+        if let (Value::Object(obj), Some(w)) = (&mut obj, &self.windows) {
+            let mut o = Map::new();
+            if !w.kinds.is_empty() {
+                o.insert(
+                    "kinds".into(),
+                    w.kinds
+                        .iter()
+                        .map(|k| window_kind_name(*k))
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+            }
+            if !w.levels.is_empty() {
+                o.insert(
+                    "levels".into(),
+                    w.levels
+                        .iter()
+                        .map(|l| window_level_name(*l))
+                        .collect::<Vec<_>>()
+                        .into(),
+                );
+            }
+            if let Some(max) = w.max {
+                o.insert("max".into(), max.into());
+            }
+            if w.overlay {
+                o.insert("overlay".into(), true.into());
+            }
+            obj.insert("windows".into(), Value::Object(o));
+        }
+        obj
+    }
+
+    fn to_json_without_windows(&self) -> Value {
         let list =
             |l: &[HostPattern]| Value::from(l.iter().map(|p| p.0.clone()).collect::<Vec<_>>());
         let mut network = Map::new();
@@ -768,12 +1009,25 @@ impl Capabilities {
         if let Some(hosts) = &self.webview {
             let mut w = Map::new();
             w.insert("hosts".into(), list(hosts));
+            // Only when granted: older runtimes read what newer signers write.
+            if self.webview_input {
+                w.insert("input".into(), true.into());
+            }
             obj.insert("webview".into(), Value::Object(w));
         }
         obj.insert("statusBar".into(), self.status_bar.into());
         obj.insert("clipboard".into(), self.clipboard.into());
         obj.insert("picker".into(), self.picker.into());
         // Only when granted: older runtimes read what newer signers write.
+        if self.speech {
+            obj.insert("speech".into(), true.into());
+        }
+        if self.notifications {
+            obj.insert("notifications".into(), true.into());
+        }
+        if self.audio {
+            obj.insert("audio".into(), true.into());
+        }
         if !self.host.is_empty() {
             obj.insert("host".into(), self.host.clone().into());
         }
@@ -796,6 +1050,17 @@ impl Capabilities {
             || self.network.http.iter().any(|g| g.allows(method, url))
     }
 
+    /// Whether `method` may reach every host, port and path of `scheme`.
+    fn allows_http_anywhere(&self, method: &str, scheme: &str) -> bool {
+        matches!(scheme, "http" | "https" | "ws" | "wss")
+            && (self.network.hosts.iter().any(HostPattern::is_any)
+                || self
+                    .network
+                    .http
+                    .iter()
+                    .any(|g| g.allows_anywhere(method, scheme)))
+    }
+
     fn allows_host(&self, name: &str) -> bool {
         self.host.iter().any(|g| match g.strip_suffix('*') {
             Some(prefix) => name.starts_with(prefix),
@@ -809,6 +1074,15 @@ impl Capabilities {
                 .webview
                 .as_ref()
                 .is_some_and(|hosts| hosts.iter().any(|h| h.matches(&url.host)))
+    }
+
+    /// Whether a web view may show every host of `scheme`.
+    fn allows_webview_anywhere(&self, scheme: &str) -> bool {
+        matches!(scheme, "http" | "https")
+            && self
+                .webview
+                .as_ref()
+                .is_some_and(|hosts| hosts.iter().any(HostPattern::is_any))
     }
 }
 
@@ -985,6 +1259,73 @@ fn object<'a>(value: &'a Value, what: &str) -> Result<&'a Map<String, Value>, St
     value
         .as_object()
         .ok_or_else(|| format!("{what} must be an object"))
+}
+
+const WINDOW_KINDS: [(&str, crate::desktop::WindowKind); 5] = [
+    ("normal", crate::desktop::WindowKind::Normal),
+    ("dialog", crate::desktop::WindowKind::Dialog),
+    ("panel", crate::desktop::WindowKind::Panel),
+    ("popup", crate::desktop::WindowKind::Popup),
+    ("overlay", crate::desktop::WindowKind::Overlay),
+];
+
+const WINDOW_LEVELS: [(&str, crate::desktop::WindowLevel); 4] = [
+    ("normal", crate::desktop::WindowLevel::Normal),
+    ("floating", crate::desktop::WindowLevel::Floating),
+    ("aboveDock", crate::desktop::WindowLevel::AboveDock),
+    ("desktopIcon", crate::desktop::WindowLevel::DesktopIcon),
+];
+
+fn window_kind_name(kind: crate::desktop::WindowKind) -> &'static str {
+    WINDOW_KINDS
+        .iter()
+        .find(|(_, k)| *k == kind)
+        .map_or("normal", |(n, _)| n)
+}
+
+fn window_level_name(level: crate::desktop::WindowLevel) -> &'static str {
+    WINDOW_LEVELS
+        .iter()
+        .find(|(_, l)| *l == level)
+        .map_or("normal", |(n, _)| n)
+}
+
+/// `capabilities.windows` as an object.
+fn windows_grant(grant: &Map<String, Value>) -> Result<WindowsGrant, String> {
+    let mut out = WindowsGrant::default();
+    if let Some(kinds) = grant.get("kinds") {
+        for name in strings(kinds, "capabilities.windows.kinds")? {
+            let Some((_, kind)) = WINDOW_KINDS.iter().find(|(n, _)| *n == name) else {
+                return Err(format!(
+                    "capabilities.windows.kinds: unknown kind `{name}` (normal, dialog, panel, popup or overlay)"
+                ));
+            };
+            out.kinds.push(*kind);
+        }
+    }
+    if let Some(levels) = grant.get("levels") {
+        for name in strings(levels, "capabilities.windows.levels")? {
+            let Some((_, level)) = WINDOW_LEVELS.iter().find(|(n, _)| *n == name) else {
+                return Err(format!(
+                    "capabilities.windows.levels: unknown level `{name}` (normal, floating, aboveDock or desktopIcon)"
+                ));
+            };
+            out.levels.push(*level);
+        }
+    }
+    if let Some(max) = grant.get("max") {
+        out.max = Some(
+            max.as_u64()
+                .and_then(|m| u32::try_from(m).ok())
+                .ok_or("capabilities.windows.max must be a whole number")?,
+        );
+    }
+    if let Some(v) = grant.get("overlay") {
+        out.overlay = v
+            .as_bool()
+            .ok_or("capabilities.windows.overlay must be a boolean")?;
+    }
+    Ok(out)
 }
 
 fn unknown_key(what: &str, key: &str, known: &[&str]) -> String {
@@ -1237,10 +1578,14 @@ impl Access {
         if url.starts_with("asset:") {
             return true;
         }
-        let Some(parts) = parse_url(url) else {
-            return false;
-        };
-        self.each(|c| c.allows_http(method, &parts))
+        match read_url(url) {
+            Ok(parts) => self.each(|c| c.allows_http(method, &parts)),
+            // Whatever host a parser reads, a grant of every host covers it.
+            Err(Unread::Ambiguous(scheme)) => {
+                self.each(|c| c.allows_http_anywhere(method, &scheme))
+            }
+            Err(Unread::NotUrl) => false,
+        }
     }
 
     /// Whether a media URL (image, video, canvas image) may be loaded.
@@ -1286,10 +1631,99 @@ impl Access {
         if url == "about:blank" {
             return self.allows_webviews();
         }
-        let Some(parts) = parse_url(url) else {
-            return false;
+        match read_url(url) {
+            Ok(parts) => self.each(|c| c.allows_webview(&parts)),
+            Err(Unread::Ambiguous(scheme)) => self.each(|c| c.allows_webview_anywhere(&scheme)),
+            Err(Unread::NotUrl) => false,
+        }
+    }
+
+    /// Whether a web view's ref may give its page trusted input
+    /// (`sendInput`): declared and granted, never by default.
+    pub fn allows_web_input(&self) -> bool {
+        self.each(|c| c.webview.is_some() && c.webview_input)
+    }
+
+    /// Whether the app may open a window of `kind` with `attributes` (its
+    /// own, before its kind's defaults) while `open` windows besides the
+    /// main one are open; the message of the refusal otherwise (the call
+    /// fails with `ERR_ACCESS_DENIED`, permission `windows`).
+    pub fn check_window(
+        &self,
+        kind: crate::desktop::WindowKind,
+        attributes: &crate::desktop::WindowAttributes,
+        open: usize,
+    ) -> Result<(), String> {
+        if !self.each(|c| c.windows.is_some()) {
+            return Err("windows of the app's own are not granted by capabilities.windows".into());
+        }
+        if !self.each(|c| c.windows.as_ref().is_some_and(|w| w.allows_kind(kind))) {
+            return Err(format!(
+                "a window of kind `{}` is not granted by capabilities.windows{}",
+                window_kind_name(kind),
+                if kind == crate::desktop::WindowKind::Overlay {
+                    " (overlays need `overlay: true`)"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if !self.each(|c| {
+            c.windows
+                .as_ref()
+                .is_some_and(|w| w.max.is_none_or(|max| open < max as usize))
+        }) {
+            return Err("capabilities.windows.max windows are open already".into());
+        }
+        let mut own = attributes.clone();
+        // The kind's own level is granted with the kind.
+        let level = own.level.take();
+        let denied = self.deny_window_attributes(&mut own);
+        if let Some(name) = denied.first() {
+            return Err(format!(
+                "the window attribute `{name}` is not granted by capabilities.windows"
+            ));
+        }
+        if let Some(level) = level
+            && !self.each(|c| c.windows.as_ref().is_some_and(|w| w.allows_level(level)))
+        {
+            return Err(format!(
+                "the window level `{}` is not granted by capabilities.windows.levels",
+                window_level_name(level)
+            ));
+        }
+        Ok(())
+    }
+
+    /// Leaves out of `attributes` what the app's capabilities do not grant
+    /// a window (an ungranted level, click-through without `overlay`) and
+    /// returns their
+    /// names, for a warning. The main window needs no `windows` grant for
+    /// the rest.
+    pub fn deny_window_attributes(
+        &self,
+        attributes: &mut crate::desktop::WindowAttributes,
+    ) -> Vec<&'static str> {
+        let mut denied = Vec::new();
+        let grant = |f: &dyn Fn(&WindowsGrant) -> bool| {
+            self.each(|c| match &c.windows {
+                Some(w) => f(w),
+                // Without windows the main window keeps the safe defaults.
+                None => false,
+            })
         };
-        self.each(|c| c.allows_webview(&parts))
+        if let Some(level) = attributes.level
+            && level != crate::desktop::WindowLevel::Normal
+            && !grant(&|w| w.allows_level(level))
+        {
+            attributes.level = None;
+            denied.push("level");
+        }
+        if attributes.passes_pointer() && !grant(&|w| w.overlay) {
+            attributes.pointer_events = None;
+            denied.push("pointerEvents");
+        }
+        denied
     }
 
     /// Whether the app may set the status bar.
@@ -1305,6 +1739,22 @@ impl Access {
     /// Whether the app may show the system's picker (`nsh/picker`).
     pub fn allows_picker(&self) -> bool {
         self.each(|c| c.picker)
+    }
+
+    /// Whether the app may recognize the user's speech (`Speech` of `nsh`).
+    pub fn allows_speech(&self) -> bool {
+        self.each(|c| c.speech)
+    }
+
+    /// Whether the app may show notifications and set its badge
+    /// (`Notifications` of `nsh`).
+    pub fn allows_notifications(&self) -> bool {
+        self.each(|c| c.notifications)
+    }
+
+    /// Whether the app may play sound (`Sound` and `AudioPlayer` of `nsh`).
+    pub fn allows_audio(&self) -> bool {
+        self.each(|c| c.audio)
     }
 
     /// Whether `nsh/host` may call the embedding app's function `name`.
@@ -1414,6 +1864,61 @@ mod tests {
 
     fn caps(json: &str) -> Capabilities {
         Capabilities::from_json(&serde_json::from_str(json).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn windows_are_granted_by_kind_level_and_count() {
+        use crate::desktop::{WindowAttributes, WindowKind, WindowLevel, WindowPointerEvents};
+        let none = WindowAttributes::default();
+        // Without a declaration: every kind but overlays, no click-through,
+        // no capture protection.
+        let all = Access::all();
+        assert!(all.check_window(WindowKind::Panel, &none, 10).is_ok());
+        assert!(all.check_window(WindowKind::Overlay, &none, 0).is_err());
+        let click_through = WindowAttributes {
+            pointer_events: Some(WindowPointerEvents::None),
+            ..Default::default()
+        };
+        assert!(
+            all.check_window(WindowKind::Normal, &click_through, 0)
+                .is_err()
+        );
+        // Declared without `windows`: none.
+        let declared = |json: &str| Access {
+            declared: caps(json),
+            granted: None,
+        };
+        assert!(
+            declared(r#"{"process":{"exit":true}}"#)
+                .check_window(WindowKind::Normal, &none, 0)
+                .is_err()
+        );
+        let limited = declared(
+            r#"{"windows":{"kinds":["normal","dialog"],"levels":["normal","floating"],"max":2}}"#,
+        );
+        assert!(limited.check_window(WindowKind::Dialog, &none, 1).is_ok());
+        assert!(limited.check_window(WindowKind::Popup, &none, 0).is_err());
+        assert!(limited.check_window(WindowKind::Normal, &none, 2).is_err());
+        let above = WindowAttributes {
+            level: Some(WindowLevel::AboveDock),
+            ..Default::default()
+        };
+        assert!(limited.check_window(WindowKind::Normal, &above, 0).is_err());
+        let overlay = declared(r#"{"windows":{"overlay":true}}"#);
+        assert!(
+            overlay
+                .check_window(WindowKind::Overlay, &click_through, 0)
+                .is_ok()
+        );
+        // `set()` keeps what is granted and leaves out the rest.
+        let mut asked = WindowAttributes {
+            title: Some("Notes".into()),
+            level: Some(WindowLevel::AboveDock),
+            ..Default::default()
+        };
+        assert_eq!(limited.deny_window_attributes(&mut asked), ["level"]);
+        assert_eq!(asked.title.as_deref(), Some("Notes"));
+        assert_eq!(asked.level, None);
     }
 
     #[test]
@@ -1821,6 +2326,8 @@ mod tests {
         assert!(!access.allows_status_bar());
         assert!(!access.allows_clipboard());
         assert!(!access.allows_picker());
+        assert!(!access.allows_speech());
+        assert!(!access.allows_audio());
         assert!(!access.allows_host("getUserInfo"));
         assert!(Access::all().is_unrestricted());
     }
@@ -1852,6 +2359,34 @@ mod tests {
             granted: Some(caps(r#"{ "host": ["bridge.*"] }"#)),
         };
         assert!(narrowed.allows_host("bridge.call") && !narrowed.allows_host("getUserInfo"));
+    }
+
+    #[test]
+    fn trusted_web_input_needs_an_explicit_grant() {
+        // Undeclared, web views are granted; their trusted input is not.
+        let all = Access::all();
+        assert!(all.allows_webviews() && !all.allows_web_input());
+        let access = |json: &str| Access {
+            declared: caps(json),
+            granted: None,
+        };
+        let input = r#"{ "webview": { "hosts": ["example.com"], "input": true } }"#;
+        assert!(access(input).allows_web_input());
+        assert!(!access(r#"{ "webview": { "hosts": ["example.com"] } }"#).allows_web_input());
+        assert!(!access(r#"{ "webview": { "input": false } }"#).allows_web_input());
+        assert!(
+            Capabilities::from_json(&serde_json::json!({ "webview": { "input": "yes" } })).is_err()
+        );
+        // It round-trips, and the embedding app may withhold it.
+        assert_eq!(
+            Capabilities::from_json(&caps(input).to_json()),
+            Ok(caps(input))
+        );
+        let narrowed = Access {
+            declared: caps(input),
+            granted: Some(caps(r#"{ "webview": { "hosts": ["*"] } }"#)),
+        };
+        assert!(!narrowed.allows_web_input());
     }
 
     #[test]
@@ -1905,11 +2440,167 @@ mod tests {
         assert!(a.allows_http("GET", "https://user:pw@api.example.org:8443/"));
     }
 
+    /// URLs that parsers read differently: WHATWG's (the web views') ends the
+    /// host at a backslash, reads one in the path as `/` and drops tab, LF
+    /// and CR, Foundation's `NSURL` keeps a backslash in the user info,
+    /// and WHATWG's decodes a host's percent-encoding and refuses spaces in
+    /// it. Granting one would let the app load a host or path it is not
+    /// granted wherever another parser loads it.
+    #[test]
+    fn urls_that_parsers_read_as_different_hosts_are_refused() {
+        let hosts = r#"["docs.example.com", "*.docs.example.com"]"#;
+        let a = Access {
+            declared: caps(&format!(
+                r#"{{ "network": {{ "hosts": {hosts} }}, "webview": {{ "hosts": {hosts} }} }}"#
+            )),
+            granted: None,
+        };
+        for url in [
+            // WHATWG: bank.example; the check read docs.example.com.
+            "https://bank.example\\@docs.example.com/",
+            "https://bank.example:443\\@docs.example.com/",
+            "https://[::1]\\@docs.example.com/",
+            // WHATWG: bank.example; the check read a subdomain.
+            "https://bank.example\\.docs.example.com/",
+            // Foundation's NSURL: bank.example; WHATWG: docs.example.com.
+            "https://docs.example.com\\@bank.example/",
+            // WHATWG: the path is `/b`; the check read `/a\..\b`.
+            "https://docs.example.com/a\\..\\b",
+            // WHATWG drops these or refuses the URL; the check read a subdomain.
+            "https://bank.example\0.docs.example.com/",
+            "https://bank.example\t.docs.example.com/",
+            "https://bank.example\n.docs.example.com/",
+            "https://bank.example .docs.example.com/",
+            "https://bank.example[.docs.example.com/",
+            "https://x]y.docs.example.com/",
+            // WHATWG: bank.example.docs.example.com, decoded.
+            "https://bank%2Eexample.docs.example.com/",
+        ] {
+            assert!(!a.allows_webview(url), "{url:?}");
+            assert!(!a.allows_http("GET", url), "{url:?}");
+            assert!(!a.allows_media(url), "{url:?}");
+        }
+        assert!(!a.allows_websocket("wss://bank.example\\@docs.example.com/"));
+        // What every parser reads alike is unchanged: an escaped backslash,
+        // a backslash in the query (WHATWG keeps it there), user info.
+        for url in [
+            "https://docs.example.com/a%5Cb",
+            "https://x.docs.example.com/?q=C:\\x#a\\b",
+            "https://user:pw@docs.example.com/a b",
+        ] {
+            assert!(a.allows_webview(url), "{url:?}");
+            assert!(a.allows_http("GET", url), "{url:?}");
+        }
+        // Nor does it refuse what an app without capabilities loads.
+        let all = Access {
+            declared: Capabilities::all(),
+            granted: None,
+        };
+        let query = url::Url::parse("wss://x.example/?q=a\\b").unwrap();
+        assert!(all.allows_websocket(query.as_str()), "{query}");
+        assert!(all.allows_media("https://x.example/i.png?p=a\\b"));
+    }
+
+    /// A URL that parsers read differently names no one host, port or path:
+    /// a grant of every host covers it (an app without `capabilities`, `*`),
+    /// a narrower grant or a rule narrowing the port or path does not, and
+    /// what is no URL stays refused.
+    #[test]
+    fn only_grants_of_every_host_cover_ambiguous_urls() {
+        let url = "https://x.example/a\\b.png";
+        let all = Access {
+            declared: Capabilities::all(),
+            granted: None,
+        };
+        let any = Access {
+            declared: caps(r#"{ "network": { "hosts": ["*"] }, "webview": { "hosts": ["*"] } }"#),
+            granted: None,
+        };
+        for a in [&all, &any] {
+            assert!(a.allows_http("GET", url));
+            assert!(a.allows_media(url));
+            assert!(a.allows_webview(url));
+            assert!(!a.allows_http("GET", "ftp://x.example/a\\b"));
+            assert!(!a.allows_webview("file://x.example/a\\b"));
+            assert!(!a.allows_webview("not a url"));
+            assert!(!a.allows_http("GET", "https://"));
+        }
+        let rule = |rule: &str| Access {
+            declared: caps(&format!(r#"{{ "network": {{ "http": [{rule}] }} }}"#)),
+            granted: None,
+        };
+        let methods = rule(r#"{ "host": "*", "methods": ["get"], "schemes": ["https"] }"#);
+        assert!(methods.allows_http("GET", url));
+        assert!(!methods.allows_http("POST", url));
+        assert!(!methods.allows_http("GET", "http://x.example/a\\b.png"));
+        for narrowed in [
+            r#"{ "host": "*", "port": 443 }"#,
+            r#"{ "host": "*", "pathPrefix": "/a" }"#,
+            r#"{ "host": "*", "paths": ["/a/b.png"] }"#,
+            r#"{ "host": "x.example" }"#,
+        ] {
+            assert!(!rule(narrowed).allows_http("GET", url), "{narrowed}");
+        }
+    }
+
+    /// A URL the check grants names a granted host for WHATWG's parser too,
+    /// the web views' (`url`'s): the check may refuse more, never less.
+    #[test]
+    fn granted_urls_are_granted_hosts_for_whatwg() {
+        let pattern = |p: &str| HostPattern::new(p).unwrap();
+        let granted = [pattern("docs.example.com"), pattern("*.docs.example.com")];
+        let a = Access {
+            declared: caps(
+                r#"{ "webview": { "hosts": ["docs.example.com", "*.docs.example.com"] } }"#,
+            ),
+            granted: None,
+        };
+        for url in [
+            "https://docs.example.com/a",
+            "https://DOCS.Example.COM/",
+            "https://docs.example.com./",
+            "https://x.docs.example.com:8443/",
+            "https://user:pw@docs.example.com/",
+            "https://docs.example.com#@bank.example/",
+            "https://docs.example.com?@bank.example/",
+            "https://docs.example.com:pass@bank.example/",
+            "https://docs.example.com%2F@bank.example/",
+            "https://bank.example\\@docs.example.com/",
+            "https://bank.example:443\\@docs.example.com/",
+            "https://[::1]\\@docs.example.com/",
+            "https://bank.example\\.docs.example.com/",
+            "https://docs.example.com\\@bank.example/",
+            "https://bank.example\0.docs.example.com/",
+            "https://bank.example\t.docs.example.com/",
+            "https://docs.example.com\n.bank.example/",
+            "https://bank%2Eexample.docs.example.com/",
+            "https://docs\u{FF0E}example\u{FF0E}com/",
+            "https://d\u{043E}cs.example.com/",
+            "https:\\\\docs.example.com\\",
+            " https://docs.example.com/",
+            "https://docs.example.com /",
+            "https://bank.example .docs.example.com/",
+            "https://bank.example^.docs.example.com/",
+            "https://bank.example[.docs.example.com/",
+            "https://x]y.docs.example.com/",
+            "https://a@bank.example@docs.example.com/",
+            "https://..docs.example.com/",
+            "HTTPS://DOCS.EXAMPLE.COM/",
+            "https://x.docs.example.com/?q=C:\\x",
+        ] {
+            if a.allows_webview(url) {
+                let whatwg = url::Url::parse(url).unwrap_or_else(|e| panic!("{url:?}: {e}"));
+                let host = whatwg.host_str().unwrap_or_default().trim_end_matches('.');
+                assert!(granted.iter().any(|p| p.matches(host)), "{url:?}: {host}");
+            }
+        }
+    }
+
     #[test]
     fn the_embedder_grants_at_most() {
         let a = Access {
             declared: caps(
-                r#"{ "network": { "hosts": ["a.com", "b.com"] }, "statusBar": true, "clipboard": true, "picker": true }"#,
+                r#"{ "network": { "hosts": ["a.com", "b.com"] }, "statusBar": true, "clipboard": true, "picker": true, "speech": true, "audio": true }"#,
             ),
             granted: Some(caps(
                 r#"{ "network": { "hosts": ["b.com"] }, "clipboard": true }"#,
@@ -1918,6 +2609,8 @@ mod tests {
         assert!(a.allows_clipboard());
         assert!(!a.allows_http("GET", "https://a.com/"));
         assert!(!a.allows_picker());
+        assert!(!a.allows_speech());
+        assert!(!a.allows_audio());
         assert!(a.allows_http("GET", "https://b.com/"));
         assert!(!a.allows_status_bar());
     }
@@ -1965,9 +2658,46 @@ mod tests {
                 .unwrap();
         assert_eq!(c, Capabilities::default());
         assert_eq!(dropped.len(), 2);
-        // What it knows is still checked.
-        assert!(lenient(r#"{ "statusBar": "yes" }"#).is_err());
-        assert!(lenient(r#"{ "network": { "hosts": ["exa mple.com"] } }"#).is_err());
+        // A value of a form it does not know (a newer NSH's, or a typo)
+        // drops its capability, alone: denied, as nothing is granted
+        // unless listed.
+        let (c, dropped) = lenient(
+            r#"{ "statusBar": "yes", "clipboard": true,
+                 "network": { "hosts": ["exa mple.com"] }, "webview": { "hosts": ["a.com"] } }"#,
+        )
+        .unwrap();
+        assert!(!c.status_bar);
+        assert!(c.clipboard);
+        assert!(c.network.hosts.is_empty());
+        assert_eq!(c.webview, Some(vec![HostPattern::new("a.com").unwrap()]));
+        assert_eq!(dropped.len(), 2, "{dropped:?}");
+        assert!(
+            dropped
+                .iter()
+                .any(|d| d.starts_with("capabilities.statusBar ("))
+        );
+        assert!(
+            dropped
+                .iter()
+                .any(|d| d.starts_with("capabilities.network ("))
+        );
+        // An `http` grant of another form is dropped alone.
+        let (c, dropped) = lenient(
+            r#"{ "network": { "hosts": ["a.com"], "http": [
+                 { "host": "b.com", "port": "any" }, { "host": "c.com" } ] } }"#,
+        )
+        .unwrap();
+        assert_eq!(c.network.hosts.len(), 1);
+        assert_eq!(c.network.http.len(), 1);
+        assert_eq!(c.network.http[0].host.as_str(), "c.com");
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+        assert!(dropped[0].starts_with("capabilities.network.http[0] ("));
+        // A declaration that is no object grants nothing.
+        let (c, dropped) = lenient(r#""everything""#).unwrap();
+        assert_eq!(c, Capabilities::default());
+        assert_eq!(dropped.len(), 1);
+        // The strict parse still refuses them.
+        assert!(Capabilities::from_json(&serde_json::json!({ "statusBar": "yes" })).is_err());
         // Nothing unknown: the same as the strict parse.
         let json = serde_json::json!({ "network": { "hosts": ["a.com"] }, "statusBar": true });
         let (c, dropped) = Capabilities::from_json_lenient(&json).unwrap();

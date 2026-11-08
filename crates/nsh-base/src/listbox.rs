@@ -45,7 +45,11 @@
 //!   search field), the selected ones `selected:` (and selected for screen
 //!   readers; [`Hooks::selected`] says which: the select's one value, the
 //!   combobox's set), a disabled one `disabled:`; a footer part below the
-//!   rows (the combobox's, [`Footer`]).
+//!   rows (the combobox's, [`Footer`]). The app's `renderItem` gets what
+//!   an item is ([`SelectEntry`]), never its state, so a row's drawing is
+//!   made once per item and a move of the highlight or a choice draws
+//!   nothing again (the content follows the row's states with `group-*:`
+//!   classes).
 //!
 //! Choosing is the component's ([`Hooks::choose`]): the select closes, a
 //! combobox of several values toggles the item and stays open.
@@ -67,7 +71,8 @@ use rustc_hash::FxHasher;
 
 use crate::{
     popup::{self, DropdownFrame, OpenChangeReason, Presence},
-    select::{SelectGroup, SelectItem, SelectItemState},
+    select::{SelectEntry, SelectGroup, SelectItem},
+    terminal::{MENU_CHECK, MENU_UNCHECKED, is_terminal},
 };
 
 /// How long typeahead keeps what was typed before it starts again.
@@ -787,7 +792,15 @@ impl Listbox {
                 When::NotEditing
             };
             let bind = |keys: &str, when: When, repeat: bool, f: Rc<dyn Fn()>| {
-                on_key_with(keys, KeyOptions { when, repeat }, move |_| f());
+                on_key_with(
+                    keys,
+                    KeyOptions {
+                        when,
+                        repeat,
+                        ..Default::default()
+                    },
+                    move |_| f(),
+                );
             };
             let moves = [
                 ("up", Move::Previous, when),
@@ -849,12 +862,40 @@ pub(crate) fn bind_typeahead(active: impl Fn() -> bool + 'static, typed: Rc<dyn 
                 KeyOptions {
                     when: When::NotEditing,
                     repeat: false,
+                    ..Default::default()
                 },
                 move |key| {
                     if let Some(c) = key.chars().next() {
                         typed(c);
                     }
                 },
+            );
+        }
+    });
+}
+
+/// Binds Tab and Shift+Tab while the list is `open`, wherever the focus
+/// is (the trigger, an input, a search field): `close` closes the list
+/// without taking the focus back, and the key goes on, so the focus moves
+/// to the next or previous control as Tab moves it (ARIA's combobox). The
+/// list would cover where the focus went. A key, not the focus leaving:
+/// on macOS the popup is a window of its own, and a press on it takes the
+/// key window from the trigger's before the press chooses.
+pub(crate) fn bind_tab_out(open: impl Fn() -> bool + 'static, close: Rc<dyn Fn()>) {
+    effect(move || {
+        if !open() {
+            return;
+        }
+        for key in ["tab", "shift+tab"] {
+            let close = close.clone();
+            on_key_with(
+                key,
+                KeyOptions {
+                    when: When::Always,
+                    repeat: false,
+                    pass_through: true,
+                },
+                move |_| close(),
             );
         }
     });
@@ -871,15 +912,30 @@ pub(crate) struct Parts {
     pub(crate) item_style: Prop<TextPartStyle>,
     pub(crate) group_class: Prop<Option<SharedString>>,
     pub(crate) group_style: Prop<Style>,
-    pub(crate) search_class: Prop<Option<SharedString>>,
-    pub(crate) search_style: Prop<InputPartStyle>,
-    pub(crate) search_placeholder: Prop<Option<SharedString>>,
-    pub(crate) render_item: Prop<Option<Renderer<SelectItemState>>>,
+    /// The search field above the rows, while the list is searchable
+    /// (`Select`'s); none when the component's own field searches
+    /// (`Combobox`'s input).
+    pub(crate) search: Option<SearchField>,
+    pub(crate) render_item: Prop<Option<Renderer<SelectEntry>>>,
     pub(crate) render_group: Prop<Option<Renderer<SelectGroup>>>,
     pub(crate) empty: Prop<Option<Slot>>,
     /// The content below the rows, in a part of its own (`Combobox`'s
     /// `footer`); none for `Select`.
     pub(crate) footer: Option<Footer>,
+    /// Desktops: the list opens with its selected item over the trigger
+    /// (`Select`'s, as shadcn/ui's item-aligned select), else on a side of
+    /// it (`Combobox`'s). The view the size of that row it lays over.
+    pub(crate) cover: Option<popup::Cover>,
+}
+
+/// The search field's parts.
+#[derive(Clone, Copy)]
+pub(crate) struct SearchField {
+    pub(crate) class: Prop<Option<SharedString>>,
+    pub(crate) style: Prop<InputPartStyle>,
+    pub(crate) placeholder: Prop<Option<SharedString>>,
+    /// What screen readers call it.
+    pub(crate) accessibility_label: Prop<Option<SharedString>>,
 }
 
 /// The part below the rows and what it holds.
@@ -926,6 +982,10 @@ pub(crate) fn present(
     popup::dropdown(
         anchor,
         width,
+        // As wide as the trigger (`gpui-component`'s default
+        // `menu_width`); the app's popup style may set another.
+        false,
+        parts.cover,
         frame,
         presence,
         Rc::new(move |sheet| content(lb, sheet, parts, hooks.clone())),
@@ -936,24 +996,27 @@ pub(crate) fn present(
 /// slot while no item shows, and the footer.
 fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyElement> {
     let query_changed = hooks.query_changed.clone();
+    let field = parts.search;
     let search = when(
-        move || lb.searchable.get(),
+        move || field.is_some() && lb.searchable.get(),
         move || {
             let query_changed = query_changed.clone();
+            let field = field.expect("a search field");
             input()
                 .value(move || lb.query())
                 .placeholder(move || {
-                    parts
-                        .search_placeholder
+                    field
+                        .placeholder
                         .get()
                         .map(|p| p.to_string())
                         .unwrap_or_default()
                 })
+                .optional_label(field.accessibility_label)
                 // The desktops type into it at once; a touch screen's
                 // keyboard comes when the user asks.
                 .auto_focus(!sheet)
-                .app_class(parts.search_class)
-                .inline_style(move || parts.search_style.get())
+                .app_class(field.class)
+                .inline_style(move || field.style.get())
                 .on_change(move |text: &str| {
                     lb.edited(text);
                     query_changed(text);
@@ -975,10 +1038,23 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
         .on_viewable_items_change(move |v: &ViewableItems| lb.viewable(v))
         .element_ref(&lb.list)
     };
+    // A terminal's rows are whole titles, a blank Cell and their mark, one
+    // row each:
+    // the list is as wide as the widest (its rows are made as they come
+    // into view, so they tell no width), and the popup with it.
+    let widest = move || {
+        lb.items.with(|items| {
+            items
+                .iter()
+                .map(|i| measure_text("", &format!("{} {MENU_CHECK}", i.title)))
+                .fold(Points::ZERO, Points::max)
+        })
+    };
     let list = scroll()
         .role(AccessibilityRole::Listbox)
         .flex_shrink(1.0)
         .min_h(px(0.0))
+        .when(is_terminal(), |v| v.min_w(move || Length::from(widest())))
         .app_class(parts.list_class)
         .inline_style(parts.list_style)
         .child(rows);
@@ -986,8 +1062,15 @@ fn content(lb: Listbox, sheet: bool, parts: Parts, hooks: Hooks) -> Vec<AnyEleme
         move || lb.shown.with(|s| s.rows.is_empty()),
         move || parts.empty.place(|e| e),
     );
+    // A terminal draws a rule under the field, as `Command` does: its
+    // border is no Cell there, and the query would run into the first row.
+    let rule = when(
+        move || field.is_some() && lb.searchable.get() && crate::terminal::is_terminal(),
+        crate::terminal::rule_line,
+    );
     let mut content = vec![
         search.into_element(),
+        rule.into_element(),
         list.into_element(),
         empty.into_element(),
     ];
@@ -1025,12 +1108,16 @@ fn header_row(entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
         Some(Row::Header { title, first }) => Some((title, first)),
         _ => None,
     });
-    let custom = computed(move || parts.render_group.with(Option::is_some));
+    // A terminal's header is its title, one row (`crate::terminal`).
+    let terminal = is_terminal();
+    let custom = computed(move || !terminal && parts.render_group.with(Option::is_some));
     view()
         .role(AccessibilityRole::Header)
         .focusable(false)
-        .app_class(parts.group_class)
-        .inline_style(parts.group_style)
+        .when(!terminal, |v| {
+            v.app_class(parts.group_class)
+                .inline_style(parts.group_style)
+        })
         .child(dynamic(move || {
             if custom.get() {
                 let content = dynamic(move || {
@@ -1040,7 +1127,14 @@ fn header_row(entry: Memo<Option<Row>>, parts: Parts) -> AnyElement {
                 });
                 return content;
             }
-            text(move || group.get().map(|(title, _)| title).unwrap_or_default()).into_element()
+            // A terminal's header reads apart from the rows under it:
+            // bold, in the muted foreground.
+            text(move || group.get().map(|(title, _)| title).unwrap_or_default())
+                .when(terminal, |t| {
+                    t.font_weight(FontWeight::BOLD)
+                        .text_color(|| crate::theme::theme().muted_foreground)
+                })
+                .into_element()
         }))
         .into_element()
 }
@@ -1055,6 +1149,12 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
         index
             .get()
             .and_then(|i| lb.items.with(|items| items.get(i).cloned()))
+    });
+    // What `renderItem` draws: the item, never its state, so a move of the
+    // highlight or a choice draws nothing again.
+    let entry = computed(move || {
+        let i = index.get()?;
+        item.with(|it| it.as_ref().map(|it| SelectEntry::of(it, i)))
     });
     let disabled = computed(move || item.with(|i| i.as_ref().is_some_and(|i| i.disabled)));
     let highlighted = computed(move || index.get().is_some_and(|i| lb.is_highlighted(i)));
@@ -1085,7 +1185,11 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
         }
     };
     let (down, tap) = (hooks.clone(), hooks);
-    let custom = computed(move || parts.render_item.with(Option::is_some));
+    // A terminal's row is the item's title after the chosen mark, one
+    // full-width row the terminal marks while highlighted
+    // (`crate::terminal`): neither the app's drawing nor its row style.
+    let terminal = is_terminal();
+    let custom = computed(move || !terminal && parts.render_item.with(Option::is_some));
     view()
         .role(AccessibilityRole::Option)
         .focusable(false)
@@ -1097,8 +1201,10 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
             ..AccessibilityState::default()
         })
         .project_focused(highlighted)
-        .app_class(parts.item_class)
-        .inline_style(move || parts.item_style.get())
+        .when(!terminal, |v| {
+            v.app_class(parts.item_class)
+                .inline_style(move || parts.item_style.get())
+        })
         .element_ref(&me)
         // The pointer highlights a row, as long as no button is down.
         .on_mouse_move(move |e: &MouseEvent| {
@@ -1126,22 +1232,54 @@ fn item_row(lb: Listbox, entry: Memo<Option<Row>>, parts: Parts, hooks: Hooks) -
             if custom.get() {
                 return dynamic(move || {
                     let render = parts.render_item.get()?;
-                    let (i, it) = (index.get()?, item.get()?);
-                    let state = SelectItemState {
-                        value: it.value,
-                        title: it.title,
-                        disabled: it.disabled,
-                        selected: selected.get(),
-                        highlighted: highlighted.get(),
-                        index: i as u32,
-                        group: it.group,
-                    };
-                    Some(render.render(format!("item:{i}"), state))
+                    let entry = entry.get()?;
+                    Some(render.render(format!("item:{}", entry.index), entry))
                 });
             }
-            text(move || item.with(|i| i.as_ref().map(|i| i.title.clone()).unwrap_or_default()))
-                .into_element()
+            let title = text(move || {
+                item.with(|i| i.as_ref().map(|i| i.title.clone()).unwrap_or_default())
+            });
+            match terminal {
+                // The title from the row's start, the terminal's check at
+                // its end on the chosen rows, as a menu's checked items:
+                // the highlight is elsewhere once a key moves it. The mark
+                // is a Cell of its own after a blank one, blank itself on
+                // the other rows, so every title starts in one column.
+                true => view()
+                    .flex_row()
+                    .flex_grow(1.0)
+                    .child(title)
+                    .child(
+                        text(move || {
+                            let mark = if selected.get() {
+                                MENU_CHECK
+                            } else {
+                                MENU_UNCHECKED
+                            };
+                            SharedString::from(format!(" {mark}"))
+                        })
+                        .ml(auto()),
+                    )
+                    .into_element(),
+                false => title.into_element(),
+            }
         }))
+        // The selected row as the popup opens: a view over it, which the
+        // popup lays over the trigger.
+        .when_some(parts.cover, |row, cover| {
+            row.child(when(
+                move || selected.get(),
+                move || {
+                    view()
+                        .absolute()
+                        .inset_0()
+                        .focusable(false)
+                        .pointer_events(PointerEvents::None)
+                        .element_ref(&cover.view)
+                        .on_layout(move |_: &Bounds<Points>| cover.shown.set(true))
+                },
+            ))
+        })
         .into_element()
 }
 

@@ -10,7 +10,7 @@ use crate::{
     css,
     effects::{
         BackdropMaterial, BlendMode, BoxShadow, Cursor, Effects, Filter, GlassEffect, Gradient,
-        KeyframeAnimation, Keyframes, Outline, Transition, TransitionProps,
+        KeyframeAnimation, Keyframes, MacOsBackdrop, Outline, Transition, TransitionProps,
     },
     element::PropEnum,
     geometry::{
@@ -138,6 +138,69 @@ impl std::fmt::Debug for FontFamily {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "FontFamily({:?})", self.name())
     }
+}
+
+/// A family of a `fontFamily` list ([`font_families`]). More generic
+/// families (`cursive`, `fantasy`) may be added: match with a `_` arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FamilyName<'a> {
+    /// The system font: `system-ui`, `sans-serif`, `ui-sans-serif`,
+    /// `-apple-system`, `BlinkMacSystemFont`.
+    System,
+    /// The system's serif: `serif`, `ui-serif`.
+    Serif,
+    /// The system's monospace font: `monospace`, `ui-monospace`.
+    Monospace,
+    /// The system's rounded font (`ui-rounded`), where it has one.
+    Rounded,
+    /// A family installed on the device or registered by the app.
+    Named(&'a str),
+}
+
+/// The families of a `fontFamily` value, most preferred first, as CSS lists
+/// them: names separated by commas, each trimmed and unquoted
+/// (`"Inter, \"Noto Sans SC\", sans-serif"`), the generic families as
+/// [`FamilyName`]'s. A quoted name runs to its closing quote, commas and all
+/// (`'ACME, Inc'`), and is always a family's name: a quoted `"serif"` names a
+/// family called serif, as in CSS. Text is set in the first family a
+/// platform has, and a character that family lacks in the next that has it.
+pub fn font_families(value: &str) -> impl Iterator<Item = FamilyName<'_>> {
+    let mut rest = value;
+    std::iter::from_fn(move || {
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                return None;
+            }
+            let (family, quoted) = if let Some(q @ ('"' | '\'')) = rest.chars().next() {
+                // To the closing quote (or the end, unclosed); what follows it
+                // up to the next comma is not part of the name.
+                let body = &rest[1..];
+                let end = body.find(q).unwrap_or(body.len());
+                let after = body.get(end + 1..).unwrap_or("");
+                rest = after.find(',').map_or("", |i| &after[i + 1..]);
+                (body[..end].trim(), true)
+            } else {
+                let end = rest.find(',').unwrap_or(rest.len());
+                let name = rest[..end].trim_end();
+                rest = rest.get(end + 1..).unwrap_or("");
+                (name, false)
+            };
+            if family.is_empty() {
+                continue;
+            }
+            return Some(match family {
+                name if quoted => FamilyName::Named(name),
+                "system-ui" | "sans-serif" | "ui-sans-serif" | "-apple-system"
+                | "BlinkMacSystemFont" => FamilyName::System,
+                "serif" | "ui-serif" => FamilyName::Serif,
+                "monospace" | "ui-monospace" => FamilyName::Monospace,
+                "ui-rounded" => FamilyName::Rounded,
+                name => FamilyName::Named(name),
+            });
+        }
+    })
 }
 
 /// Lines drawn through or under text (`textDecorationLine`).
@@ -469,6 +532,10 @@ pub struct ViewStyle {
     pub backdrop_material: BackdropMaterial,
     /// `glassEffect`.
     pub glass_effect: GlassEffect,
+    /// `glassTintColor`: the tint of `glassEffect`'s native material.
+    pub glass_tint_color: Option<Color>,
+    /// The macOS backdrop from `macos={{ backdrop }}`, projected at mount time.
+    pub macos_backdrop: Option<MacOsBackdrop>,
     /// `outline*`.
     pub outline: Outline,
     /// `visibility: "hidden"`: not drawn and not touchable, still laid out.
@@ -794,6 +861,8 @@ impl Default for ViewStyle {
             blend_mode: BlendMode::Normal,
             backdrop_material: BackdropMaterial::UltraThin,
             glass_effect: GlassEffect::None,
+            glass_tint_color: None,
+            macos_backdrop: None,
             outline: Outline::NONE,
             hidden: false,
             cursor: Cursor::Auto,
@@ -1018,6 +1087,8 @@ pub(crate) struct Pending {
     animation_easing: Option<[f32; 4]>,
     /// `animationIterationCount` (`None` inside: forever).
     animation_iterations: Option<Option<u32>>,
+    /// `animationFrameRate` (`None` inside: the screen's highest).
+    animation_frame_rate: Option<Option<f32>>,
     /// The `env()` terms of the padding and margin, added by the core to
     /// the lengths their declarations set.
     pub(crate) env: EnvEdges,
@@ -1096,6 +1167,9 @@ impl Pending {
         }
         if let Some(count) = self.animation_iterations {
             animation.iterations = count;
+        }
+        if let Some(hz) = self.animation_frame_rate {
+            animation.frame_rate = hz;
         }
         animation
     }
@@ -1518,8 +1592,9 @@ style_keys! {
     BackgroundImage = "backgroundImage": View "string" "CSS gradients drawn over the background color: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`, several separated by commas.",
     Filter = "filter": View "string" "CSS filters of the view and its content: `brightness()`, `contrast()`, `grayscale()`, `hue-rotate()`, `invert()`, `saturate()`, `sepia()`, `opacity()`, `blur()`, `drop-shadow()`.",
     BackdropFilter = "backdropFilter": View "string" "CSS filters of what is behind the view (`blur(10px)`).",
-    MaskImage = "maskImage": View "string" "A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included.",
+    MaskImage = "maskImage": View "string" "A CSS gradient whose alpha decides how much of the view is drawn, fully where opaque and not at all where transparent: `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)`. Masks everything the view draws, its backdrop filter included, whose blur then draws without the system material's tint. Not drawn on Windows and GPUI.",
     GlassEffect = "glassEffect": View "\"none\" | \"regular\" | \"clear\"" "A glass material behind the view's content (Apple's Liquid Glass). Drawn on iOS 26 and macOS 26 and later; elsewhere the view's `backdropFilter` is drawn as before, so give a glass view a blur to fall back to.",
+    GlassTintColor = "glassTintColor": View "ColorValue" "A tint of the glass material (`glassEffect`; iOS 26 and macOS 26 and later): the color the native glass takes on, or `null` for the system default. A transparent color is an explicit tint, not a reset. Has no effect without glass; the blur fallback on earlier systems stays unchanged.",
     MixBlendMode = "mixBlendMode": View "\"normal\" | \"multiply\" | \"screen\" | \"overlay\" | \"darken\" | \"lighten\" | \"color-dodge\" | \"color-burn\" | \"hard-light\" | \"soft-light\" | \"difference\" | \"exclusion\" | \"hue\" | \"saturation\" | \"color\" | \"luminosity\" | \"plus-darker\" | \"plus-lighter\"" "How the view blends with what is behind it.",
     OutlineWidth = "outlineWidth": View "number" "A line outside the border that takes no space.",
     OutlineColor = "outlineColor": View "ColorValue",
@@ -1536,6 +1611,7 @@ style_keys! {
     AnimationDelay = "animationDelay": View "number | `${number}ms` | `${number}s`",
     AnimationTimingFunction = "animationTimingFunction": View "\"linear\" | \"ease\" | \"ease-in\" | \"ease-out\" | \"ease-in-out\" | `cubic-bezier(${string})`",
     AnimationIterationCount = "animationIterationCount": View "number | \"infinite\"",
+    AnimationFrameRate = "animationFrameRate": View "number" "The highest frame rate the keyframe animation needs, in Hz (a slow spinner: 30); unset, the screen's highest. Platforms that can lower their frame rate honor it.",
     TextDecorationStyle = "textDecorationStyle": Text "\"solid\" | \"double\" | \"dotted\" | \"dashed\" | \"wavy\"",
     TextDecorationThickness = "textDecorationThickness": Text "number | \"auto\" | \"from-font\"",
     TextUnderlineOffset = "textUnderlineOffset": Text "number | \"auto\"",
@@ -1595,7 +1671,7 @@ style_keys! {
     FontSize = "fontSize": Text "number",
     FontWeight = "fontWeight": Text "\"normal\" | \"bold\" | number | `${number}`" "`\"normal\"` (400), `\"bold\"` (700) or 100–900.",
     LineHeight = "lineHeight": Text "number",
-    FontFamily = "fontFamily": Text "string" "A system family or the name an imported font (`import Inter from \"./Inter.ttf\"`) evaluates to.",
+    FontFamily = "fontFamily": Text "string" "A system family or the name an imported font (`import Inter from \"./Inter.ttf\"`) evaluates to, or a list of them as CSS writes it, most preferred first (`\"Brand, 'Noto Sans SC', sans-serif\"`): characters the first lacks come from the next that has them.",
     FontStyle = "fontStyle": Text "\"normal\" | \"italic\"",
     LetterSpacing = "letterSpacing": Text "number",
     TextDecorationLine = "textDecorationLine": Text "\"none\" | \"underline\" | \"line-through\" | \"underline line-through\"",
@@ -2301,6 +2377,12 @@ fn number(v: StyleValue<'_>, default: f32) -> Result<f32, StyleError> {
     }
 }
 
+/// A frame rate in Hz as an animation asks for one: a positive, finite
+/// number (anything else asks for none: the screen's highest).
+pub(crate) fn frame_rate(hz: Option<f32>) -> Option<f32> {
+    hz.filter(|hz| hz.is_finite() && *hz > 0.0)
+}
+
 fn opt_number(v: StyleValue<'_>) -> Result<Option<f32>, StyleError> {
     match v {
         StyleValue::Number(n) => Ok(Some(n)),
@@ -2811,6 +2893,7 @@ impl StyleKey {
             | K::BorderBottomColor
             | K::BorderLeftColor
             | K::TintColor
+            | K::GlassTintColor
             | K::OutlineColor
             | K::Color
             | K::TextDecorationColor
@@ -3089,6 +3172,9 @@ impl StyleKey {
                 StyleValue::Str("infinite") | StyleValue::Null => None,
                 v => Some(number(v, 1.0)?.max(0.0) as u32),
             }),
+            K::AnimationFrameRate => {
+                PropertyValue::OptNumber(frame_rate(opt_number(value)?).map(of))
+            }
             K::TextDecorationStyle => PropertyValue::DecorationStyle(match keyword(value)? {
                 None => None,
                 Some("solid") => Some(DecorationStyle::Solid),
@@ -3587,6 +3673,7 @@ impl Style {
             }
             (K::BorderCurve, V::Bool(v)) => self.view.continuous_corners = *v,
             (K::TintColor, V::Color(c)) => self.view.tint_color = *c,
+            (K::GlassTintColor, V::Color(c)) => self.view.glass_tint_color = *c,
             (K::ObjectFit, V::ObjectFit(v)) => self.pending.object_fit = *v,
             (K::ObjectPosition, V::ObjectPosition(v)) => self.view.object_position = *v,
             (K::BackfaceVisibility, V::Bool(v)) => self.view.backface_hidden = *v,
@@ -3755,6 +3842,13 @@ impl Style {
                     a.iterations = *count;
                 }
             }
+            (K::AnimationFrameRate, V::OptNumber(hz)) => {
+                let hz = hz.map(|n| n.0);
+                self.pending.animation_frame_rate = Some(hz);
+                if let Some(a) = self.view.animation.as_mut() {
+                    a.frame_rate = hz;
+                }
+            }
             (K::TextDecorationStyle, V::DecorationStyle(v)) => self.text.decoration_style = *v,
             (K::TextDecorationThickness, V::OptPoints(v)) => self.text.decoration_thickness = *v,
             (K::TextUnderlineOffset, V::OptPoints(v)) => self.text.underline_offset = *v,
@@ -3787,6 +3881,57 @@ impl Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_family_lists_name_their_families_in_order() {
+        use super::{FamilyName, font_families};
+        let list: Vec<_> =
+            font_families(" Inter , \"Noto Sans SC\",'Brand Mono', ui-monospace, sans-serif,")
+                .collect();
+        assert_eq!(
+            list,
+            [
+                FamilyName::Named("Inter"),
+                FamilyName::Named("Noto Sans SC"),
+                FamilyName::Named("Brand Mono"),
+                FamilyName::Monospace,
+                FamilyName::System,
+            ]
+        );
+        assert_eq!(
+            font_families("serif").collect::<Vec<_>>(),
+            [FamilyName::Serif]
+        );
+        assert_eq!(
+            font_families("ui-rounded").collect::<Vec<_>>(),
+            [FamilyName::Rounded]
+        );
+        assert_eq!(font_families(" , ").count(), 0);
+    }
+
+    /// A quoted name keeps its commas and is a family's name even when it
+    /// spells a generic family, as in CSS.
+    #[test]
+    fn quoted_family_names_keep_their_commas() {
+        use super::{FamilyName, font_families};
+        assert_eq!(
+            font_families("'ACME, Inc', serif").collect::<Vec<_>>(),
+            [FamilyName::Named("ACME, Inc"), FamilyName::Serif]
+        );
+        assert_eq!(
+            font_families("\"Brand, Display\" , 'monospace', ui-monospace").collect::<Vec<_>>(),
+            [
+                FamilyName::Named("Brand, Display"),
+                FamilyName::Named("monospace"),
+                FamilyName::Monospace,
+            ]
+        );
+        // An unclosed quote runs to the end.
+        assert_eq!(
+            font_families("Inter, 'Noto, Sans").collect::<Vec<_>>(),
+            [FamilyName::Named("Inter"), FamilyName::Named("Noto, Sans")]
+        );
+    }
+
     use super::*;
     use crate::geometry::{relative, size};
 
@@ -4404,6 +4549,7 @@ mod tests {
                 ("animationName", Str("spin")),
                 ("animationDelay", Str("0.1s")),
                 ("animationTimingFunction", Str("ease-in")),
+                ("animationFrameRate", Number(30.0)),
             ],
             |s| {
                 let a = s.view.animation.unwrap();
@@ -4412,6 +4558,7 @@ mod tests {
                 assert_eq!(a.iterations, Some(2));
                 assert_eq!(a.delay, 100.0);
                 assert_eq!(a.easing, [0.42, 0.0, 1.0, 1.0]);
+                assert_eq!(a.frame_rate, Some(30.0));
             },
         );
         // Without a name nothing runs.
@@ -4424,6 +4571,26 @@ mod tests {
         s.set("animationDuration", Number(300.0)).unwrap();
         s.set("animationName", Str("spin")).unwrap();
         assert_eq!(s.view.animation.unwrap().duration, 300.0);
+    }
+
+    #[test]
+    fn animation_frame_rate_asks_for_a_positive_rate() {
+        use StyleValue::{Null, Number, Str};
+        let mut s = Style::default();
+        s.set("animationName", Str("spin")).unwrap();
+        // Unset: the screen's highest.
+        assert_eq!(s.view.animation.unwrap().frame_rate, None);
+        s.set("animationFrameRate", Number(24.0)).unwrap();
+        assert_eq!(s.view.animation.unwrap().frame_rate, Some(24.0));
+        // Not a rate: none asked for.
+        for hz in [0.0, -30.0, f32::INFINITY] {
+            s.set("animationFrameRate", Number(hz)).unwrap();
+            assert_eq!(s.view.animation.unwrap().frame_rate, None);
+        }
+        s.set("animationFrameRate", Number(30.0)).unwrap();
+        s.set("animationFrameRate", Null).unwrap();
+        assert_eq!(s.view.animation.unwrap().frame_rate, None);
+        assert!(s.set("animationFrameRate", Str("30")).is_err());
     }
 
     #[test]
@@ -4748,6 +4915,26 @@ mod tests {
         );
         assert_eq!(
             s.set("maskImage", StyleValue::Str("url(a.png)")),
+            Err(StyleError::InvalidValue)
+        );
+    }
+
+    #[test]
+    fn glass_tint_color_parses_and_clears() {
+        let mut s = Style::default();
+        assert_eq!(s.view.glass_tint_color, None);
+        s.set("glassTintColor", StyleValue::Str("#ff0000")).unwrap();
+        assert_eq!(s.view.glass_tint_color, Some(Color(0xff00_00ff)));
+        s.set(
+            "glassTintColor",
+            StyleValue::Str("color-mix(in srgb, #00ff00 50%, transparent)"),
+        )
+        .unwrap();
+        assert!(s.view.glass_tint_color.is_some());
+        s.set("glassTintColor", StyleValue::Null).unwrap();
+        assert_eq!(s.view.glass_tint_color, None);
+        assert_eq!(
+            s.set("glassTintColor", StyleValue::Number(1.0)),
             Err(StyleError::InvalidValue)
         );
     }

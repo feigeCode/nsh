@@ -75,6 +75,12 @@ rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-and
 rustup target add wasm32-unknown-unknown                                             # the web
 ```
 
+We recommend building with [huacnlee/cargo](https://github.com/huacnlee/cargo), a fork of Cargo optimized by [huacnlee](https://github.com/huacnlee) so Rust build artifacts never fill the disk: every project and Git worktree shares one build directory that stays under a size limit on its own. With 50 worktrees it takes about 90% less disk space than stock Cargo, and a 512 GB disk is plenty. It is a drop-in replacement for `~/.cargo/bin/cargo` with nothing to configure:
+
+```sh
+curl -fsSL https://huacnlee.github.io/cargo/install.sh | sh     # Windows: irm https://huacnlee.github.io/cargo/install.ps1 | iex
+```
+
 The desktops build for the machine you are on. `cargo run` in a Rust app's directory starts it on the desktop backend directly, which builds with the backend's development libraries ([Platform tools](#platform-tools)). Android builds also use an **NDK** from the SDK, as [building the Android runtime](#building-the-android-runtime) does.
 
 ## The prebuilt distribution
@@ -91,6 +97,7 @@ dist/nsh/runtime/macos/{nsh-macos-host,nsh-macos-app}        # the macOS (AppKit
 dist/nsh/runtime/linux/{nsh-linux-host,nsh-linux-app}        # the Linux development host and release runner
 dist/nsh/runtime/windows/{nsh-windows-host,nsh-windows-app}.exe  # the Windows development host and release runner
 dist/nsh/runtime/gpui/nsh-gpui-host[.exe]                    # the GPUI development host, for this OS
+dist/nsh/runtime/tui/nsh-tui-host[.exe]                      # the terminal development host (nsh run --target tui)
 dist/nsh/runtime/web/{nsh.wasm,nsh-dev.wasm,nsh.js}          # the web runtimes (nsh package / run --target web)
 dist/nsh/embed/ios/{NativeShell,NativeShellDev}.xcframework  # embedding in iOS apps
 dist/nsh/embed/android/{nsh,nsh-dev}.aar                     # embedding in Android apps
@@ -103,58 +110,47 @@ export PATH="$PWD/dist/nsh/bin:$PATH"
 nsh --version
 ```
 
-The distribution is made with `cargo xtask dist` in a checkout (below). The `nsh` binary it contains is built for that machine. On a Mac with Xcode it includes the iOS and macOS runtimes (Apple Silicon); on Linux it includes the Linux runtime instead, built for that machine; on Windows the Windows runtime, with `bin\nsh.exe`. Each also includes the [GPUI](./gpui.md) development host, built for that machine. All include the Android runtime (on Windows only when the Android SDK is found).
+The distribution is made with `cargo xtask dist` in a checkout (below). The `nsh` binary it contains is built for that machine. On a Mac with Xcode it includes the iOS and macOS runtimes (Apple Silicon); on Linux it includes the Linux runtime instead, built for that machine; on Windows the Windows runtime, with `bin\nsh.exe`. Each also includes the [GPUI](./gpui.md) and terminal development hosts, built for that machine. All include the Android runtime (on Windows only when the Android SDK is found).
 
-## Installing the latest source
+## Installing the nightly build
 
-On macOS and Linux, install the latest `main` with Git, Rust and the platform build dependencies below:
+Every night that `main` changes, it is built and published as the [nightly release](https://github.com/longbridge/nsh/releases/tag/nightly), with the same archives as a release:
+
+```sh
+curl -fsSL https://nsh.dev/install.sh | sh -s -- --nightly
+nsh -V # nsh 0.4.0 (abcdef0 nightly)
+```
+
+Apps written in Rust build their runner with NSH's crates on crates.io at the CLI's version, the last release's; for those apps, use a release or the source.
+
+## Updating
+
+`nsh update` updates an installed `nsh` to the latest build of its channel: the latest release, or the latest nightly for a nightly build. Naming a channel switches to it, as `rustup update nightly` does:
+
+```sh
+nsh update                    # the latest of the channel it is on
+nsh update nightly            # to the nightly build of main
+nsh update stable             # back to the latest release
+```
+
+It downloads the same archive as the install scripts, checks its SHA-256 and replaces the whole distribution directory. Homebrew, Scoop and mise update the `nsh` they installed themselves (`brew upgrade nsh`, `scoop update nsh`, `mise upgrade`).
+
+## Building from source
+
+With Git, Rust and the [platform tools](#platform-tools), on macOS and Linux:
 
 ```sh
 curl -fsSL https://nsh.dev/install.sh | sh -s -- --source
-nsh -V # nsh 0.1.1 (abcdef0)
 ```
 
-The installer keeps the checkout in `~/.nsh/source`, builds the release CLI and links it into `~/.local/bin`. Re-run the command to update; local source changes must be saved first. The retained checkout lets NSH build native runtimes on demand. Cargo uses its existing configuration and target directory. `NSH_INSTALL_DIR` changes the installation prefix; `NSH_VERSION` selects prebuilt releases only. Both `-V` and `--version` show the version and seven-character source revision.
-
-## Building from a checkout
-
-You need Rust through [rustup](https://rustup.rs). The repository's `rust-toolchain.toml` selects the stable toolchain and installs the iOS and Android targets on first use.
+It keeps the checkout in `~/.nsh/source`, builds the CLI and links it into `~/.local/bin`; run it again to update. To work on NSH itself, clone the repository and build the CLI there; it builds the desktop and web runtimes it runs on when they are missing:
 
 ```sh
-git clone https://github.com/longbridge/nsh.git
-cd nsh
+git clone https://github.com/longbridge/nsh.git && cd nsh
 cargo build -p nsh-cli          # ./target/debug/nsh
 ```
 
-Then build the development host of each target you want to run on, once, and again after you update the checkout:
-
-```sh
-cargo build -p nsh-ios-host --target aarch64-apple-ios-macabi   # nsh run (Mac Catalyst window)
-cargo build -p nsh-ios-host --target aarch64-apple-ios-sim      # nsh run --target ios
-cargo xtask android --dev                                       # nsh run --target android
-cargo build -p nsh-macos-host                                   # nsh run --target macos (built for you in a checkout)
-cargo build -p nsh-linux-host                                   # nsh run on Linux (built for you in a checkout)
-cargo build -p nsh-windows-host                                 # nsh run on Windows (built for you in a checkout)
-cargo build --manifest-path crates/gpui/Cargo.toml --target-dir target -p nsh-gpui-host   # nsh run --target gpui (built for you in a checkout)
-cargo build --profile web -p nsh-platform-web --target wasm32-unknown-unknown   # nsh run --target web (built for you in a checkout)
-```
-
-For `nsh package`, build the release runners as well:
-
-```sh
-cargo build -p nsh-ios-app --target aarch64-apple-ios-sim       # nsh package --target ios-simulator
-cargo build -p nsh-ios-app --target aarch64-apple-ios           # nsh package --target ios
-cargo xtask android                                             # nsh package --target android
-cargo build -p nsh-macos-app                                    # nsh package --target macos
-cargo build -p nsh-linux-app                                    # nsh package --target linux
-cargo build -p nsh-windows-app                                  # nsh package --target windows
-# nsh package --target web uses the same web runtime as nsh run --target web
-```
-
-A CLI built from a checkout looks for the runtimes in `target/<triple>/<profile>` (the macOS, Linux, Windows and GPUI ones, built for this machine, in `target/<profile>`) and `target/android/<profile>[-dev]`, using its own profile: `./target/debug/nsh` uses debug runtimes, `./target/release/nsh` release ones. Build both with the same profile (add `--release` to all of them for faster apps).
-
-> [!TIP]
-> `NSH_RUNTIME=/path/to/runtime` makes `nsh` use a runtime directory laid out like the distribution's `runtime/`, wherever the CLI itself lives.
+The commands for the iOS and Android runtimes and the release runners are in the repository's [AGENTS.md](https://github.com/longbridge/nsh/blob/main/AGENTS.md#commands).
 
 ## Platform tools
 
@@ -187,7 +183,7 @@ See [macOS](./macos.md).
 
 - **GTK 4.14** or later, with their development packages and clang to build the runtime: `libgtk-4-dev clang` (Debian, Ubuntu 24.04 or later), `gtk4 clang` (Arch), `gtk4-devel clang` (Fedora).
 - **WebKitGTK 6.0** (2.40 or later) for web views: `libwebkitgtk-6.0-dev` (Debian, Ubuntu), `webkitgtk-6.0` (Arch), `webkitgtk6.0-devel` (Fedora) to build the runtime; apps then need it where they run. Without it, `cargo xtask dist` builds the runtime with placeholders for web views.
-- **GStreamer** plugins for the video formats apps play.
+- **GStreamer** 1.14 or later, for video and sound: `libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev` (Debian, Ubuntu), `gstreamer gst-plugins-base` (Arch), `gstreamer1-devel gstreamer1-plugins-base-devel` (Fedora) to build the runtime, and the plug-ins for the video and audio formats apps play.
 
 See [Linux](./linux.md).
 

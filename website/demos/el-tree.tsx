@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Button, Tree, type TreeItem, type TreeRef } from "nsh/base";
-import { button, buttonText, desktop, Log, Panel, Split, TreeRow, treeItemClass, ui, wide } from "./palette";
+import { button, buttonText, desktop, Log, Panel, sectionSurface, Split, TreeRow, treeItemClass, ui, wide } from "./palette";
 
 // A project's files: folders that open with their chevron, files, sizes at
 // the end, a folder the app keeps out of reach (`disabled`). The tree owns
@@ -71,8 +71,8 @@ function App() {
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>tree</Text>
       <Text style={{ color: ui().muted }}>
         {desktop
-          ? "Click a folder, or Tab in and use the arrows: Right opens and enters, Left closes and leaves"
-          : "Tap a folder to open it, a file to select it"}
+          ? "Click a folder, or Tab in and use the arrows: Right opens and enters, Left closes and leaves; double-click a file or press Return to act on it"
+          : "Tap a folder to open it, a file to select it; double-tap a file to act on it"}
       </Text>
 
       <Split
@@ -92,17 +92,17 @@ function App() {
         <View style={{ width: wide() ? 300 : undefined, alignSelf: wide() ? "center" : "stretch", gap: 10 }}>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             <Button {...button("secondary", { size: "sm" })} onPress={() => tree?.revealItem("src/ui/icons/file.svg")}>
-              <Text style={buttonText()}>Reveal file.svg</Text>
+              <Text style={buttonText("secondary", { size: "sm" })}>Reveal file.svg</Text>
             </Button>
             <Button
-              {...button("ghost", { size: "sm" })}
+              {...button("ghost", { size: "sm", disabled: () => expanded().length === 0 })}
               disabled={expanded().length === 0}
               onPress={() => {
                 expanded.set([]);
                 log("collapse all");
               }}
             >
-              <Text style={buttonText("ghost")}>Collapse all</Text>
+              <Text style={buttonText("ghost", { size: "sm" })}>Collapse all</Text>
             </Button>
           </View>
           <Tree
@@ -112,7 +112,7 @@ function App() {
             selected={selected()}
             reveal
             accessibilityLabel="Project files"
-            style={{ height: desktop ? 320 : 360, borderRadius: 12, ...ui().card }}
+            style={{ ...sectionSurface(), height: desktop ? 320 : 360 }}
             listStyle={{ padding: 6 }}
             itemClass={treeItemClass}
             onExpandedChange={({ expanded: next }) => expanded.set(next)}
@@ -122,6 +122,7 @@ function App() {
             }}
             onExpand={({ id }) => log(`onExpand({ id: "${id}" })`)}
             onCollapse={({ id }) => log(`onCollapse({ id: "${id}" })`)}
+            onAction={({ id }) => log(`onAction({ id: "${id}" })`)}
             renderItem={(entry) => <TreeRow entry={entry} detail={entry.disabled ? "excluded" : sizes[entry.id]} />}
           />
         </View>

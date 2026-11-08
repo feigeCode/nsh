@@ -27,6 +27,12 @@ pub struct ToggleProps {
     /// What screen readers say: what the toggle turns on, when its children
     /// have no text that says it (an icon).
     pub accessibility_label: Prop<Option<SharedString>>,
+    /// How far outside its bounds presses still count, as a view's
+    /// `hitSlop`: one number for every side, or the sides named (each left
+    /// out 0). A small toggle (an icon) takes presses a finger lands near
+    /// it, with no change to its layout or look.
+    #[prop(default)]
+    pub hit_slop: Prop<EdgeInsets>,
     /// The content: the app's icon or label, whose `group-aria-pressed:`
     /// classes follow the toggle under `group` in its `class`, and which
     /// screen readers say.
@@ -42,6 +48,11 @@ pub enum ToggleEvent {
     /// `pressed` the app passes back.
     #[args(pressed)]
     Change(bool),
+    /// A press went down on it (for the app's own press feedback, such as
+    /// a shape that follows the finger).
+    PressDown,
+    /// The press ended: released, moved away or cancelled.
+    PressUp,
 }
 
 /// A button that is on or off (bold, a favorite, a view option), alone or
@@ -50,11 +61,14 @@ pub enum ToggleEvent {
 /// for screen readers: a toggle button) and leaves its look to the app: no
 /// colors, sizes, icon or label of its own. The app's `class` and `style`
 /// style it, `aria-pressed:` and `disabled:` classes (or `pressedStyle`
-/// and `disabledStyle`) its states, `active:` the press in progress, and
-/// its children are its content, whose `group-aria-pressed:` classes
-/// follow the toggle under `group` in its `class`. In a [`ToggleGroup`]
-/// or a `Toolbar`, it is a stop of the keyboard focus only while it is the
-/// item Tab enters the group at (see [`ToggleGroup`]).
+/// and `disabledStyle`) its states, `active:` the press in progress
+/// (`onPressDown` and `onPressUp` for feedback the state styles do not
+/// express), and its children are its content, whose
+/// `group-aria-pressed:` classes follow the toggle under `group` in its
+/// `class`. `hitSlop` widens where presses count past its bounds, as a
+/// view's does. In a [`ToggleGroup`] or a `Toolbar`, it is a stop of the
+/// keyboard focus only while it is the item Tab enters the group at (see
+/// [`ToggleGroup`]).
 #[component]
 pub fn Toggle(props: ToggleProps, cx: Scope<ToggleEvent>) -> impl IntoElement {
     let pressed = props.pressed;
@@ -73,7 +87,10 @@ pub fn Toggle(props: ToggleProps, cx: Scope<ToggleEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .pressed_style(props.pressed_style)
+        .hit_slop(props.hit_slop)
         .on_press(move |_: &()| cx.emit(ToggleEvent::Change(!pressed.get_untracked())))
+        .on_press_down(move |_: &()| cx.emit(ToggleEvent::PressDown))
+        .on_press_up(move |_: &()| cx.emit(ToggleEvent::PressUp))
         .child(props.children)
 }
 

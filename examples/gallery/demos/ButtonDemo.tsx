@@ -1,14 +1,16 @@
-import { type AnimatedValue, cleanup, Clipboard, createAnimatedValue, Easing, effect, LayoutAnimation, openUrl, reduceMotion, signal, Text, token, View } from "nsh";
+import { type AnimatedValue, cleanup, Clipboard, createAnimatedValue, Easing, effect, LayoutAnimation, openUrl, reduceMotion, signal, Text, View } from "nsh";
 import { Button as BaseButton, Menu, MenuItem } from "nsh/base";
 import { keymap, platform } from "nsh";
-import { Icon, type IconName } from "../icons";
-import { alpha, Badge, Button, Caption, Card, colors, DemoPage, finish, focusRing, follow, hovered, mono, motion, radius, Spinner, tints, Tip, Toggle } from "../ui";
+import { Icon, IconLabel, type IconName } from "../icons";
+import { play as sound } from "../../nsh-gallery-ui/sound";
+import { alpha, backdrop, Badge, Button, buttonLook, Caption, Card, colors, DemoPage, finish, focusRing, follow, iconButtonGlyph, iconButtonLook, menuItemLook, MenuPanel, menuSheet, mono, motion, radius, Spinner, splitButtonLook, terminal, TERMINAL_GAP, tints, Tip, Toggle } from "../ui";
 
 // `nsh/base`'s `Button` owns presses, the disabled state, keyboard focus and
-// the button role; the look is the gallery's (`Button` of `nsh-gallery-ui`):
-// a raised neutral, the citrus main action, a quiet ghost, a destructive
-// tint, each with its hover, pressed, focus and disabled states. The motion
-// is the gallery's too: a press sinks, a new icon or a spinner grows in and
+// the button role; the look is the gallery's (`buttonLook` of
+// `nsh-gallery-ui`): a raised neutral, the citrus main action, a quiet
+// ghost, a destructive tint, each with its hover, pressed, focus and
+// disabled states. The motion is the gallery's too: a press sinks (natively,
+// its `activeStyle`), a new icon or a spinner grows in and
 // the label's new width eases in (`motion.control`), all at once with
 // reduced motion.
 
@@ -53,42 +55,20 @@ function popOn(key: () => unknown): AnimatedValue {
  * its shortcut on desktops). `on` keeps it chosen (a toggle: a favorite),
  * its icon in the accent and popping as it turns on or off.
  */
-function IconButton(props: { icon: IconName; label: string; shortcut?: string; on?: boolean; tone?: "danger"; variant?: "ghost" | "secondary"; onPress: () => void }) {
-  const size = pointer ? 28 : 40;
-  const press = createAnimatedValue(1);
+function IconButton(props: { icon: IconName; label: string; short?: string; shortcut?: string; on?: boolean; tone?: "danger"; variant?: "ghost" | "secondary"; onPress: () => void }) {
   const pop = popOn(() => props.on);
-  const raised = () => props.variant === "secondary";
-  const tint = () => (props.on ? colors.accent : props.tone === "danger" ? colors.danger : raised() ? colors.text : colors.muted);
+  const look = { on: () => props.on, tone: props.tone, variant: props.variant };
   return (
     <View
       onPress={props.onPress}
-      onPressDown={() => press.spring(0.9, motion.press)}
-      onPressUp={() => press.spring(1, motion.press)}
       role="button"
       accessibilityLabel={props.label}
       accessibilityState={props.on === undefined ? undefined : { selected: props.on }}
       tooltip={<Tip label={props.shortcut && pointer ? `${props.label}  ${props.shortcut}` : props.label} />}
-      hoverStyle={props.on ? undefined : props.tone === "danger" ? { backgroundColor: tints.danger } : raised() ? finish.hover : hovered()}
-      activeStyle={raised() ? finish.pressed : { backgroundColor: alpha(colors.text, 0.1) }}
-      focusStyle={focusRing()}
-      style={{
-        width: size,
-        height: size,
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: radius.control,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        borderColor: "transparent",
-        backgroundColor: props.on ? tints.accent : "transparent",
-        ...(raised() && !props.on ? finish.raised : {}),
-        transform: [{ scale: press }],
-        transitionProperty: "background-color, border-color, box-shadow",
-        transitionDuration: 120,
-      }}
+      {...iconButtonLook(look)}
     >
       <View style={{ transform: [{ scale: pop }] }}>
-        <Icon name={props.icon} size={pointer ? 15 : 18} tint={tint()} />
+        <IconLabel name={props.icon} label={props.short ?? props.label} {...iconButtonGlyph(look)} />
       </View>
     </View>
   );
@@ -114,8 +94,10 @@ function FillButton(props: {
   onPressUp?: () => void;
   onLongPress?: () => void;
 }) {
-  const press = createAnimatedValue(1);
   const glyph = follow(() => (props.busy || props.icon ? 1 : 0));
+  // `buttonLook`'s raised button: the press sinks it natively
+  // (`activeStyle`); press down and up reach the app only for what a held
+  // press means (the hold's fill).
   return (
     <View
       testID={props.testID}
@@ -125,33 +107,9 @@ function FillButton(props: {
       onPress={props.onPress}
       onLongPress={props.onLongPress}
       delayLongPress={props.delayLongPress}
-      onPressDown={() => {
-        press.spring(0.97, motion.press);
-        props.onPressDown?.();
-      }}
-      onPressUp={() => {
-        press.spring(1, motion.press);
-        props.onPressUp?.();
-      }}
-      hoverStyle={props.disabled ? undefined : finish.hover}
-      focusStyle={focusRing()}
-      style={{
-        alignSelf: "flex-start",
-        height: pointer ? 28 : 40,
-        paddingHorizontal: pointer ? 12 : 16,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: pointer ? 6 : 8,
-        overflow: "hidden",
-        borderRadius: radius.control,
-        borderCurve: "continuous",
-        borderWidth: 1,
-        ...finish.raised,
-        opacity: props.disabled ? 0.4 : 1,
-        transform: [{ scale: press }],
-        transitionProperty: "background-color, border-color, box-shadow, opacity",
-        transitionDuration: 120,
-      }}
+      onPressDown={props.onPressDown}
+      onPressUp={props.onPressUp}
+      {...buttonLook("secondary", { disabled: () => props.disabled, style: { alignSelf: "flex-start", overflow: "hidden" } })}
     >
       <View
         style={{
@@ -177,12 +135,6 @@ function FillButton(props: {
     </View>
   );
 }
-
-/** The menu's popup on desktops (one edge, a soft shadow), a sheet at the bottom on touch screens. */
-const menuSurface = () =>
-  pointer
-    ? { borderRadius: 10, borderWidth: 1, padding: 4, minWidth: 260, ...finish.menu }
-    : { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 34 };
 
 type Strategy = { value: "merge" | "squash" | "rebase"; label: string; note: string; done: string };
 
@@ -272,17 +224,17 @@ export function ButtonDemo() {
             <Text style={{ fontSize: pointer ? 14 : 16, fontWeight: "600", color: colors.text }}>Harbor at dawn.jpg</Text>
             <Text style={{ fontSize: pointer ? 12 : 13, color: colors.faint, fontVariant: ["tabular-nums"] }}>4032 × 3024 · 3.2 MB</Text>
           </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: pointer ? 2 : 4 }}>
-            <IconButton icon="star" label={starred() ? "Remove from favorites" : "Add to favorites"} shortcut={key} on={starred()} onPress={star} />
-            <IconButton icon="share" label="Share…" onPress={() => last.set("pressed Share")} />
+          <View style={{ flexDirection: "row", alignItems: "center", gap: terminal ? TERMINAL_GAP : pointer ? 2 : 4 }}>
+            <IconButton icon="star" label={starred() ? "Remove from favorites" : "Add to favorites"} short="Favorite" shortcut={key} on={starred()} onPress={star} />
+            <IconButton icon="share" label="Share…" short="Share" onPress={() => last.set("pressed Share")} />
             <IconButton icon="download" label="Download" onPress={() => last.set("pressed Download")} />
-            <IconButton icon="trash" label="Move to the trash" tone="danger" onPress={() => last.set("pressed Move to the trash")} />
+            <IconButton icon="trash" label="Move to the trash" short="Trash" tone="danger" onPress={() => last.set("pressed Move to the trash")} />
           </View>
         </View>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: terminal ? TERMINAL_GAP : 8 }}>
           <IconButton icon="plus" label="New file" variant="secondary" onPress={() => last.set("pressed New file")} />
           <IconButton icon="search" label="Search" variant="secondary" onPress={() => last.set("pressed Search")} />
-          <IconButton icon="sidebar" label={pinned() ? "Hide the sidebar" : "Show the sidebar"} variant="secondary" on={pinned()} onPress={() => pinned.set(!pinned())} />
+          <IconButton icon="sidebar" label={pinned() ? "Hide the sidebar" : "Show the sidebar"} short="Sidebar" variant="secondary" on={pinned()} onPress={() => pinned.set(!pinned())} />
           <View style={{ flex: 1 }} />
           <Button label="Play" icon="play" variant="secondary" onPress={() => last.set("pressed Play")} />
         </View>
@@ -307,94 +259,74 @@ export function ButtonDemo() {
       });
     };
     const label = () => (state() === "busy" ? "Merging…" : state() === "done" ? strategy().done : strategy().label);
-    // Each half sinks as it is pressed; the pair shares one silhouette.
-    const half = { height: pointer ? 28 : 40, flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "center" as const };
+    // One silhouette (`splitButtonLook`): each half shades under the
+    // pointer, deeper pressed; done, the pair turns the up tone.
+    const done = () => state() === "done";
+    const split = splitButtonLook("primary", { style: () => (done() ? { backgroundColor: tints.up, backgroundImage: "none", borderColor: alpha(colors.up, 0.4), boxShadow: "none" } : undefined) });
+    const ink = () => (done() ? colors.up : colors.onAccent);
     return (
       <Card
         title="Split button"
         subtitle="The main action, its variants in a menu"
-        right={<Badge label={state() === "done" ? "Merged" : "Open"} tone={state() === "done" ? "up" : "neutral"} />}
+        right={<Badge label={done() ? "Merged" : "Open"} tone={done() ? "up" : "neutral"} />}
       >
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "stretch",
-              borderRadius: radius.control,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              overflow: "hidden",
-              ...(state() === "done" ? { backgroundColor: tints.up, backgroundImage: "none", borderColor: alpha(colors.up, 0.4), boxShadow: "none" } : finish.accent),
-              transitionProperty: "background-color, border-color, box-shadow",
-              transitionDuration: reduceMotion() ? 0 : 200,
-            }}
-          >
-            <BaseButton
-              onPress={merge}
-              disabled={state() === "done"}
-              accessibilityLabel={label()}
-              hoverStyle={state() === "idle" ? { backgroundColor: alpha("#ffffff", 0.12) } : undefined}
-              activeStyle={state() === "idle" ? { backgroundColor: alpha("#000000", 0.08) } : undefined}
-              focusStyle={focusRing(-2)}
-              style={{ ...half, gap: pointer ? 6 : 8, paddingHorizontal: pointer ? 12 : 16 }}
-            >
+          <View {...split.frame}>
+            <BaseButton onPress={merge} disabled={done()} accessibilityLabel={label()} {...split.segment({ disabled: () => state() !== "idle" })}>
               <View style={{ transform: [{ scale: pop }] }}>
-                <If when={state() === "busy"} else={<Icon name={state() === "done" ? "check" : "merge"} size={pointer ? 14 : 16} tint={state() === "done" ? colors.up : colors.onAccent} />}>
+                <If when={state() === "busy"} else={<Icon name={done() ? "check" : "merge"} size={pointer ? 14 : 16} tint={ink()} />}>
                   <Spinner size={pointer ? 13 : 15} tint={colors.onAccent} />
                 </If>
               </View>
-              <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: state() === "done" ? colors.up : colors.onAccent }}>{label()}</Text>
+              <Text style={{ fontSize: pointer ? 13 : 15, fontWeight: "500", color: ink() }}>{label()}</Text>
             </BaseButton>
-            <View style={{ width: 1, backgroundColor: state() === "done" ? alpha(colors.up, 0.3) : alpha(colors.onAccent, 0.22) }} />
+            <View style={done() ? { ...split.divider, backgroundColor: alpha(colors.up, 0.3) } : split.divider} />
             <Menu
               align="end"
               offset={6}
               margin={8}
               open={open()}
               onOpenChange={({ open: o }) => open.set(o)}
-              popupStyle={menuSurface()}
-              backdropStyle={{ backgroundColor: "rgba(0,0,0,0.45)" }}
+              popupStyle={menuSheet()}
+              backdropStyle={backdrop()}
               trigger={
                 <View
                   role="button"
                   accessibilityLabel="Merge options"
                   disabled={state() !== "idle"}
-                  hoverStyle={{ backgroundColor: alpha("#ffffff", 0.12) }}
-                  activeStyle={{ backgroundColor: alpha("#000000", 0.08) }}
-                  focusStyle={focusRing(-2)}
-                  style={{ ...half, width: pointer ? 26 : 40, backgroundColor: open() ? alpha("#000000", 0.1) : "transparent" }}
+                  {...split.segment({ selected: open, disabled: () => state() !== "idle", style: terminal ? undefined : { width: pointer ? 26 : 40, paddingHorizontal: 0 } })}
                 >
                   <View style={{ alignSelf: "stretch", flexGrow: 1, alignItems: "center", justifyContent: "center", transform: [{ rotate: open() ? "180deg" : "0deg" }], transitionProperty: "transform", transitionDuration: reduceMotion() ? 0 : 180 }}>
-                    <Icon name="chevron-down" size={pointer ? 12 : 14} tint={state() === "done" ? colors.up : colors.onAccent} weight={2} />
+                    <Icon name="chevron-down" size={pointer ? 12 : 14} tint={ink()} weight={2} />
                   </View>
                 </View>
               }
             >
-              <Each of={strategies}>
-                {(s) => (
-                  <MenuItem
-                    onSelect={() => {
-                      resize();
-                      strategy.set(s());
-                      last.set(`chose ${s().label}`);
-                    }}
-                    hoverStyle={{ backgroundColor: token("accent") }}
-                    activeStyle={{ backgroundColor: alpha(colors.text, 0.1) }}
-                    style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 8, paddingVertical: pointer ? 6 : 10, borderRadius: pointer ? 6 : 10 }}
-                  >
-                    <View style={{ flexGrow: 1, flexShrink: 1, gap: 2 }}>
-                      <Text style={{ fontSize: pointer ? 13 : 16, fontWeight: "500", color: colors.text }}>{s().label}</Text>
-                      <Text style={{ fontSize: pointer ? 12 : 14, color: colors.muted }}>{s().note}</Text>
-                    </View>
-                    {/* The check at the trailing edge, as every menu's. */}
-                    <View style={{ width: 16, paddingTop: 1, alignItems: "center" }}>
-                      <If when={strategy().value === s().value}>
-                        <Icon name="check" size={14} tint={colors.accent} weight={2} />
-                      </If>
-                    </View>
-                  </MenuItem>
-                )}
-              </Each>
+              <MenuPanel minWidth={260}>
+                <Each of={strategies}>
+                  {(s) => (
+                    <MenuItem
+                      onSelect={() => {
+                        resize();
+                        strategy.set(s());
+                        last.set(`chose ${s().label}`);
+                      }}
+                      {...menuItemLook({ tall: true, style: { gap: terminal ? 8 : 10 } })}
+                    >
+                      <View style={{ flexGrow: 1, flexShrink: 1, gap: 2, paddingLeft: terminal ? 8 : 0 }}>
+                        <Text style={{ fontSize: pointer ? 13 : 16, fontWeight: "500", color: colors.text }}>{s().label}</Text>
+                        <Text style={{ fontSize: pointer ? 12 : 14, color: colors.muted }}>{s().note}</Text>
+                      </View>
+                      {/* The check at the trailing edge, as every menu's. */}
+                      <View style={{ width: 16, paddingTop: terminal ? 0 : 1, paddingRight: terminal ? 8 : 0, alignItems: "center" }}>
+                        <If when={strategy().value === s().value}>
+                          <Icon name="check" size={14} tint={colors.accent} weight={2} />
+                        </If>
+                      </View>
+                    </MenuItem>
+                  )}
+                </Each>
+              </MenuPanel>
             </Menu>
           </View>
           <If when={state() === "done"}>
@@ -431,6 +363,7 @@ export function ButtonDemo() {
       last.set("Save: started");
       after(1200, () => {
         save.set("done");
+        sound("success");
         last.set("Save: done");
         after(1800, () => save.set("idle"));
       });
@@ -451,6 +384,7 @@ export function ButtonDemo() {
             progress.set(null);
             fill.set(0);
             doneUpload.set(true);
+            sound("success");
             last.set("Upload: done");
           });
       };
@@ -485,6 +419,7 @@ export function ButtonDemo() {
     const copied = signal<string | null>(null);
     const copy = (what: string, text: string) => {
       void Clipboard.writeText(text);
+      sound("success", { volume: 0.3 });
       copied.set(what);
       last.set(`copied ${what}`);
       after(1600, () => copied() === what && copied.set(null));
@@ -575,6 +510,7 @@ export function ButtonDemo() {
               onLongPress={() => {
                 resize();
                 state.set("done");
+                sound("close", { volume: 0.8 });
                 fill.set(0);
                 nudge.set(false);
                 last.set("deleted Q3 roadmap");
@@ -634,7 +570,8 @@ export function ButtonDemo() {
     );
   }
 
-  return <DemoPage cards={[Kinds, Split, Loading, Icons, Hold, Copy, Sizes, Disabled, Last]} />;
+  // A terminal's buttons are all one row, so it has no sizes to show.
+  return <DemoPage cards={terminal ? [Kinds, Split, Loading, Icons, Hold, Copy, Disabled, Last] : [Kinds, Split, Loading, Icons, Hold, Copy, Sizes, Disabled, Last]} />;
 }
 
 /** A label and its switch. */
