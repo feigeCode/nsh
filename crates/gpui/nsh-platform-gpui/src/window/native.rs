@@ -268,6 +268,13 @@ mod win {
     /// `DWMWA_USE_IMMERSIVE_DARK_MODE`.
     const DARK_MODE: u32 = 20;
 
+    /// `LONG_PTR`: `isize` on 64-bit Windows, `i32` on 32-bit Windows, where
+    /// `windows-sys` aliases `SetWindowLongPtrW` to `SetWindowLongW`.
+    #[cfg(target_pointer_width = "32")]
+    type LongPtr = i32;
+    #[cfg(target_pointer_width = "64")]
+    type LongPtr = isize;
+
     fn hwnd(window: &Window) -> Option<HWND> {
         let handle = HasWindowHandle::window_handle(window).ok()?;
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
@@ -282,7 +289,7 @@ mod win {
             let style = GetWindowLongPtrW(hwnd, index) as u32;
             let next = if on { style | bits } else { style & !bits };
             if next != style {
-                SetWindowLongPtrW(hwnd, index, next as isize);
+                SetWindowLongPtrW(hwnd, index, next as LongPtr);
                 SetWindowPos(
                     hwnd,
                     std::ptr::null_mut(),
@@ -459,7 +466,7 @@ mod win {
         let owner = parent.and_then(hwnd).unwrap_or(std::ptr::null_mut());
         // SAFETY: a plain call on a live window; the owner outlives it or
         // is cleared before it closes.
-        unsafe { SetWindowLongPtrW(child, GWLP_HWNDPARENT, owner as isize) };
+        unsafe { SetWindowLongPtrW(child, GWLP_HWNDPARENT, owner as LongPtr) };
     }
 
     /// Enables or disables the window's input (its modal child shows).
